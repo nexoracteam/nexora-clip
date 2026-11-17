@@ -15,14 +15,35 @@ const WORKFLOWS = [
   ["recap", "Recap", "One clip that delivers the video's main points."],
   ["trailer", "Trailer", "One teaser that never gives away the payoff."],
 ];
+// Only services with a free way to use them. A paid provider that is already saved still shows up, so nothing breaks.
+const FREE_MODELS = {
+  "google-gla": [
+    ["gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite · best free daily limit"],
+    ["gemini-2.5-flash", "Gemini 2.5 Flash"],
+    ["gemini-flash-latest", "Gemini Flash (latest)"],
+    ["gemini-3-flash-preview", "Gemini 3 Flash preview · about 20 a day"],
+  ],
+  groq: [
+    ["openai/gpt-oss-20b", "GPT-OSS 20B"],
+    ["openai/gpt-oss-120b", "GPT-OSS 120B"],
+    ["llama-3.3-70b-versatile", "Llama 3.3 70B"],
+    ["llama-3.1-8b-instant", "Llama 3.1 8B"],
+  ],
+  openrouter: [
+    ["openai/gpt-oss-20b:free", "GPT-OSS 20B (free)"],
+    ["meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B (free)"],
+  ],
+};
 const PROVIDERS = [
-  ["google-gla", "Google Gemini", "gemini-3-flash-preview", "google_api_key"],
-  ["openai", "OpenAI", "gpt-5-mini", "openai_api_key"],
-  ["anthropic", "Anthropic Claude", "claude-sonnet-5-5", "anthropic_api_key"],
-  ["openrouter", "OpenRouter", "google/gemini-3-flash-preview", "openrouter_api_key"],
-  ["groq", "Groq", "llama-3.3-70b-versatile", "groq_api_key"],
-  ["ollama", "Ollama (local)", "llama3.1", null],
-  ["custom", "Custom OpenAI-compatible", "", "custom_api_key"],
+  ["google-gla", "Google Gemini (free tier)", "gemini-3.1-flash-lite", "google_api_key"],
+  ["groq", "Groq (free tier)", "openai/gpt-oss-20b", "groq_api_key"],
+  ["openrouter", "OpenRouter (free models)", "openai/gpt-oss-20b:free", "openrouter_api_key"],
+  ["ollama", "Ollama (on this PC, free)", "", null],
+  ["custom", "Local server (OpenAI-compatible)", "", "custom_api_key"],
+];
+const PAID_PROVIDERS = [
+  ["openai", "OpenAI (paid)", "gpt-5-mini", "openai_api_key"],
+  ["anthropic", "Anthropic Claude (paid)", "claude-sonnet-5-5", "anthropic_api_key"],
 ];
 
 
@@ -55,6 +76,56 @@ const S = {
   form: { url: "", path: "", workflow: "highlights", options: { layout: "gaming", clip_length: "auto", template: "gaming", font_family: null, font_size: null, font_color: null, captions: true, hook_titles: true, broll: false, instructions: "", topic: "", part_count: 3, transition: null, emoji: false, download_quality: "1080p60", section_start: null, section_end: null, render_top: 5 } },
 };
 
+const ERRORS = {
+  ai_busy: ["No free AI is available right now", "Highlights still work: clips are then picked by sound and speech. To get AI picks again, add a free Groq key, start Ollama on this PC, or try tomorrow when the Gemini limit resets.", "settings"],
+  ai_quota: ["The free limit is used up", "Another free model takes over by itself while this one rests.", "settings"],
+  ai_key: ["The AI key was not accepted", "Open Settings and paste the key again.", "settings"],
+  ai_model: ["This model is not available", "Pick another one in the list.", "settings"],
+  ai_down: ["The AI did not answer", "Try again in a moment, or pick another model.", ""],
+  ai_bad_answer: ["The AI answered, but not as expected", "Pick another model.", "settings"],
+  ai_setup: ["The AI is not set up yet", "Choose a free model and paste its key in Settings.", "settings"],
+};
+function errInfo(err) {
+  let raw = String((err && err.message) || err || "").trim().replace(/^Error:\s*/i, "");
+  const m = raw.match(/^\[([a-z_]+)\]\s*([\s\S]*)$/);
+  if (m && ERRORS[m[1]]) return { title: ERRORS[m[1]][0], body: m[2], hint: ERRORS[m[1]][1], action: ERRORS[m[1]][2], raw };
+  const t = raw.toLowerCase();
+  if (/ffmpeg is missing|not installed|tools/.test(t) && /install|missing/.test(t)) return { title: "A tool is missing", body: raw, hint: "Open Settings, then Tools, and press Install everything missing.", action: "settings", raw };
+  if (/human check|signed in|cookies/.test(t)) return { title: "YouTube wants a signed-in browser", body: raw, hint: "", action: "settings", raw };
+  if (/connection|network|getaddrinfo|timed out/.test(t)) return { title: "No internet connection", body: "Check your connection and try again.", hint: "", action: "", raw };
+  if (/disk|free space/.test(t)) return { title: "Not enough disk space", body: raw, hint: "", action: "settings", raw };
+  return { title: "Something went wrong", body: raw.length > 260 ? raw.slice(0, 260) + "…" : raw, hint: "", action: "", raw };
+}
+function errorCard(i) {
+  return `<div class="errcard"><div class="errcard-ic">!</div><div class="grow"><b>${esc(i.title)}</b>${i.body ? `<p>${esc(i.body)}</p>` : ""}${i.hint ? `<p class="muted small">${esc(i.hint)}</p>` : ""}${i.action && S.view !== "settings" ? `<div class="row" style="margin-top:8px"><button class="btn sm" data-act="err-settings">Open Settings</button></div>` : ""}</div></div>`;
+}
+function okCard(title, body) {
+  return `<div class="errcard ok"><div class="errcard-ic">✓</div><div class="grow"><b>${esc(title)}</b>${body ? `<p>${esc(body)}</p>` : ""}</div></div>`;
+}
+function toastError(err) {
+  const i = errInfo(err);
+  const el = document.createElement("div");
+  el.className = "toast err";
+  el.innerHTML = `<b>${esc(i.title)}</b>${i.body ? `<span>${esc(i.body.length > 180 ? i.body.slice(0, 180) + "…" : i.body)}</span>` : ""}`;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), 9000);
+}
+// An app-styled question instead of the Windows box. Resolves true on the confirm button.
+function askConfirm({ title, text, label = "Delete", danger = true }) {
+  return new Promise((resolve) => {
+    const root = document.createElement("div");
+    root.className = "modal-back confirm-back";
+    root.innerHTML = `<div class="modal confirm" role="alertdialog" aria-modal="true" aria-label="${esc(title)}"><div class="confirm-body"><h2>${esc(title)}</h2><p class="muted">${esc(text || "")}</p></div>
+      <div class="modal-foot"><button class="btn" data-c="no">Cancel</button><button class="btn ${danger ? "danger-fill" : "primary"}" data-c="yes">${esc(label)}</button></div></div>`;
+    const done = (v) => { document.removeEventListener("keydown", key, true); root.remove(); resolve(v); };
+    const key = (e) => { if (e.key === "Escape") { e.preventDefault(); done(false); } else if (e.key === "Enter") { e.preventDefault(); done(true); } };
+    root.addEventListener("click", (e) => { if (e.target === root) done(false); const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c === "yes"); });
+    document.addEventListener("keydown", key, true);
+    document.body.appendChild(root);
+    root.querySelector('[data-c="no"]').focus();
+  });
+}
+
 function toast(message, isError) {
   const el = document.createElement("div");
   el.className = "toast" + (isError ? " err" : "");
@@ -63,7 +134,7 @@ function toast(message, isError) {
   setTimeout(() => el.remove(), isError ? 9000 : 4000);
 }
 async function call(cmd, args) {
-  try { return await invoke(cmd, args); } catch (err) { toast(String(err), true); throw err; }
+  try { return await invoke(cmd, args); } catch (err) { toastError(err); throw err; }
 }
 
 // ---------- navigation ----------
@@ -95,12 +166,12 @@ async function render() {
     return;
   }
   if (view === "settings") {
-    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); } else v.innerHTML = skeletonPage("Settings");
+    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); } else v.innerHTML = skeletonPage("Settings");
     const before = JSON.stringify([S.tools, S.groq]);
     await refreshTools();
     try { S.groq = await invoke("groq_status"); } catch (e) {}
     if (!live()) return;
-    if (before !== JSON.stringify([S.tools, S.groq]) || !$("#storage-box")) { quiet(() => { renderSettings(); loadOutroPreview(); loadStorage(); }); }
+    if (before !== JSON.stringify([S.tools, S.groq]) || !$("#storage-box")) { quiet(() => { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); }); }
     else loadStorage();
     return;
   }
@@ -296,7 +367,7 @@ function taskHead() {
       ${S.clips.some((c) => c.status === "ready") ? `<button class="btn" data-act="zip">Download all (ZIP)</button>` : ""}
       <button class="btn danger" data-act="del-task">Delete</button></div></div>
     ${running ? progressCard(t) : ""}
-    ${t.status === "error" ? `<div class="alert err" style="margin-bottom:16px"><div><b>This task failed.</b> ${esc(t.error)}</div></div>` : ""}
+    ${t.status === "error" ? `<div style="margin-bottom:16px">${errorCard(errInfo(t.error))}</div>` : ""}
     ${t.summary ? `<div class="card stack" style="margin-bottom:16px"><p>${esc(t.summary)}</p>${t.key_topics.length ? `<div class="chips">${t.key_topics.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}</div>` : ""}</div>` : ""}`;
 }
 function renderTask() {
@@ -525,13 +596,28 @@ async function refreshTools() {
   [S.tools, S.info] = await Promise.all([invoke("tools_status"), invoke("app_info")]);
   renderFoot();
 }
+async function loadUpdates(force) {
+  S.updates = null;
+  if (S.view === "settings" && $("#tools")) $("#tools").innerHTML = S.tools.map(toolRow).join("");
+  try { S.updates = await invoke("tool_updates", { force: !!force }); } catch (e) { S.updates = []; }
+  if (S.view === "settings" && $("#tools")) $("#tools").innerHTML = S.tools.map(toolRow).join("");
+}
+function toolButton(t) {
+  if (!t.installed) return `<button class="btn sm" data-install="${t.name}" ${S.installing ? "disabled" : ""}>Install</button>`;
+  if (S.installing && S.toolProgress[t.name]) return `<button class="btn sm" disabled><span class="btn-spin"></span>Updating…</button>`;
+  if (!S.updates) return `<button class="btn sm" disabled><span class="btn-spin"></span>Checking…</button>`;
+  const u = S.updates.find((x) => x.name === t.name);
+  if (!u || !u.checked) return `<button class="btn sm" disabled title="Could not reach the update server">Can't check</button>`;
+  if (!u.update) return `<button class="btn sm" disabled title="${u.latest ? "Latest: " + esc(u.latest) : "Nothing newer"}">Up to date</button>`;
+  return `<button class="btn sm brand" data-install="${t.name}" ${S.installing ? "disabled" : ""}>${u.latest ? "Update to " + esc(u.latest.replace(/^v/, "")) : "Update"}</button>`;
+}
 function toolRow(t) {
   const p = S.toolProgress[t.name];
   return `<div class="tool"><div class="grow"><div class="tool-name">${esc(t.label)} ${t.required ? "" : `<span class="muted small">optional</span>`}</div>
       <div class="muted small">${esc(t.note)} ${t.installed ? "· " + esc(t.version) : ""}</div>
       ${p ? `<div class="bar" style="margin-top:6px"><i style="width:${Math.round(p.fraction * 100)}%"></i></div><div class="muted small">${esc(p.message)}</div>` : ""}</div>
     <span class="badge ${t.installed ? "completed" : "error"}">${t.installed ? "Installed" : "Missing"}</span>
-    <button class="btn sm" data-install="${t.name}" ${S.installing ? "disabled" : ""}>${t.installed ? "Update" : "Install"}</button></div>`;
+    ${toolButton(t)}</div>`;
 }
 
 function groqCard() {
@@ -564,32 +650,67 @@ function storageHtml() {
   const rows = [["Downloaded videos", st.sources], ["Finished clips", st.clips], ["Cache & temp files", st.cache], ["Tools & models", st.tools]];
   return `<div class="storage-grid">${rows.map((r) => `<div><b>${fmtBytes(r[1])}</b><span class="muted small">${r[0]}</span></div>`).join("")}<div><b>${fmtBytes(st.free)}</b><span class="muted small">Free on this drive</span></div></div>`;
 }
+async function loadOllama() {
+  try { S.ollama = await invoke("list_ollama"); } catch (e) { S.ollama = []; }
+  if (S.view === "settings" && S.settings.llm.startsWith("ollama:") && !typingInView()) renderSettings();
+}
+async function loadAiUsage() {
+  const box = $("#ai-usage"); if (!box) return;
+  let u; try { u = await invoke("ai_usage"); } catch (e) { return; }
+  const nice = (m) => m.replace(/^google-gla:/, "Gemini ").replace(/^ollama:/, "Ollama ").replace(/^openrouter:/, "OpenRouter ").replace(/^groq:/, "Groq ");
+  const rows = (u.models || []).map((r) => `<span class="chip" title="Requests answered today / failed">${esc(nice(r.model))} · ${r.ok} ok${r.failed ? " · " + r.failed + " failed" : ""}${r.resting ? " · resting" : ""}</span>`).join("");
+  const anyRest = (u.models || []).some((r) => r.resting);
+  box.innerHTML = rows ? `<div class="chips" style="align-items:center"><span>Used today:</span>${rows}${anyRest ? `<button class="btn sm" data-act="wake-models">Try resting models again</button>` : ""}</div>` : "No AI requests yet today.";
+}
 async function loadOutroPreview() {
   try {
     const path = await invoke("outro_preview");
     S.outroPreview = fileSrc(path) + "?v=" + Date.now();
-  } catch (err) { S.outroPreview = null; toast(String(err), true); }
+  } catch (err) { S.outroPreview = null; toastError(err); }
   const el = $("#outro-preview"); if (el && S.outroPreview) el.innerHTML = `<img src="${S.outroPreview}" alt="Outro preview" />`;
 }
 
 function renderSettings() {
   const s = S.settings, [prov, ...rest] = s.llm.split(":"), model = rest.join(":");
-  const P = PROVIDERS.find((p) => p[0] === prov) || PROVIDERS[0];
+  const paid = PAID_PROVIDERS.find((p) => p[0] === prov);
+  const providerList = paid ? [...PROVIDERS, paid] : PROVIDERS;
+  const P = providerList.find((p) => p[0] === prov) || PROVIDERS[0];
+  const listed = FREE_MODELS[P[0]];
+  let modelField;
+  if (listed) {
+    const opts = listed.some((m) => m[0] === model) || !model ? listed : [[model, model + " (current)"], ...listed];
+    modelField = `<select id="s-model">${opts.map((m) => `<option value="${esc(m[0])}" ${m[0] === (model || P[2]) ? "selected" : ""}>${esc(m[1])}</option>`).join("")}</select>`;
+  } else if (P[0] === "ollama") {
+    const have = S.ollama || [];
+    modelField = have.length
+      ? `<select id="s-model">${(have.includes(model) || !model ? have : [model, ...have]).map((m) => `<option value="${esc(m)}" ${m === (model || have[0]) ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>`
+      : `<input type="text" id="s-model" value="${esc(model)}" placeholder="Start Ollama, then: ollama pull qwen2.5:7b" />`;
+  } else {
+    modelField = `<input type="text" id="s-model" value="${esc(model)}" placeholder="${esc(P[2])}" />`;
+  }
   const key = (id, label, ph = "") => `<label class="field">${label}<input type="password" data-set="${id}" value="${esc(s[id])}" placeholder="${ph}" autocomplete="off" /></label>`;
   const miss = S.tools.filter((t) => !t.installed);
   $("#view").innerHTML = `<div class="page stack">
     <div class="page-head" style="margin:0"><div><h1>Settings</h1><p class="muted">Keys stay on this PC, in the app's local database.</p></div><button class="btn primary" data-act="save-settings">Save settings</button></div>
-    <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Tools</h2>${miss.length ? `<button class="btn primary sm" data-act="install-all" ${S.installing ? "disabled" : ""}>Install everything missing</button>` : ""}</div>
+    <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Tools</h2><button class="btn sm" data-act="recheck-updates" title="Look for newer versions">Check for updates</button>${miss.length ? `<button class="btn primary sm" data-act="install-all" ${S.installing ? "disabled" : ""}>Install everything missing</button>` : ""}</div>
       <div id="tools">${S.tools.map(toolRow).join("")}</div></div>
     <div class="card stack"><h2>AI model (clip selection)</h2>
-      <div class="grid-3"><label class="field">Provider<select id="s-prov">${PROVIDERS.map((p) => `<option value="${p[0]}" ${p[0] === P[0] ? "selected" : ""}>${p[1]}</option>`).join("")}</select></label>
-        <label class="field">Model<input type="text" id="s-model" value="${esc(model)}" placeholder="${esc(P[2])}" /></label>
-        ${P[3] ? key(P[3], P[1] + " API key") : `<label class="field">Ollama URL<input type="text" data-set="ollama_base_url" value="${esc(s.ollama_base_url)}" /></label>`}</div>
+      <p class="muted small">Only free ways to use AI are listed. If one is busy or out of free quota, the next free one answers by itself, so a clip run does not stop.</p>
+      <div class="grid-3"><label class="field">Provider<select id="s-prov">${providerList.map((p) => `<option value="${p[0]}" ${p[0] === P[0] ? "selected" : ""}>${p[1]}</option>`).join("")}</select></label>
+        <label class="field">Model${modelField}</label>
+        ${P[3] ? key(P[3], P[1].replace(/ \(.*\)/, "") + " API key") : `<label class="field">Ollama address<input type="text" data-set="ollama_base_url" value="${esc(s.ollama_base_url)}" /></label>`}</div>
       ${P[0] === "custom" ? `<label class="field">Base URL (…/v1)<input type="text" data-set="custom_base_url" value="${esc(s.custom_base_url)}" placeholder="http://localhost:1234/v1" /></label>` : ""}
       <div class="grid-3"><label class="field">Rerank model for long videos (optional, provider:model)<input type="text" data-set="rerank_llm" value="${esc(s.rerank_llm)}" placeholder="same as above" /></label>
         <label class="field">Most clips per video<input type="number" data-set="max_clips" data-num min="1" max="20" value="${s.max_clips}" /></label>
-        <div class="row" style="align-items:flex-end"><button class="btn" data-act="test-llm">Save & test AI connection</button></div></div></div>
+        <div class="row" style="align-items:flex-end"><button class="btn" id="test-llm-btn" data-act="test-llm">Save & test AI connection</button></div></div>
+      <div id="ai-test"></div>
+      <div id="ai-usage" class="muted small"></div></div>
     ${groqCard()}
+    <div class="card stack"><h2>Game knowledge and captions</h2>
+      <p class="muted small">For GTA VI videos the AI knows the characters, places and release facts, speech recognition is told their names, and captions get their spelling right. Hindi and Urdu captions can be shown in Roman letters ("yaar kya hai").</p>
+      <div class="grid-3"><label class="field">Game knowledge<select data-set="knowledge_profile">${[["auto", "Notice it from the video (recommended)"], ["gta6", "GTA VI, always"], ["off", "Off"]].map((o) => `<option value="${o[0]}" ${s.knowledge_profile === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}</select></label>
+        <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" data-set="roman_captions" ${s.roman_captions ? "checked" : ""} />Hindi / Urdu captions in Roman letters</label>
+        <div class="row" style="align-items:flex-end"><button class="btn" data-act="open-knowledge">Open my GTA notes</button></div></div></div>
     <div class="card stack"><h2>Transcription</h2>
       <div class="grid-3"><label class="field">Provider<select data-set="transcription_provider" data-rerender>
           ${[["whisper_local", "Whisper on this PC (free, offline)"], ["assemblyai", "AssemblyAI (best accuracy, speakers)"], ["groq", "Groq Whisper (fast, cloud)"], ["openai", "OpenAI Whisper"]].map((o) => `<option value="${o[0]}" ${s.transcription_provider === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}</select></label>
@@ -628,7 +749,7 @@ function readSettings() {
     s[k] = el.type === "checkbox" ? el.checked : "num" in el.dataset ? Number(el.value) : el.value.trim();
   });
   const prov = $("#s-prov"), model = $("#s-model");
-  if (prov) { const P = PROVIDERS.find((p) => p[0] === prov.value); s.llm = `${prov.value}:${model.value.trim() || P[2]}`; }
+  if (prov) { const P = [...PROVIDERS, ...PAID_PROVIDERS].find((p) => p[0] === prov.value); s.llm = `${prov.value}:${(model && model.value.trim()) || P[2]}`; }
 }
 async function saveSettings(quiet) {
   readSettings();
@@ -639,10 +760,11 @@ async function saveSettings(quiet) {
 async function installTools(names) {
   S.installing = true; renderSettings();
   for (const name of names) {
-    try { await invoke("install_tool", { name }); } catch (err) { toast(`${name}: ${err}`, true); }
+    try { await invoke("install_tool", { name }); } catch (err) { toastError(err); }
     delete S.toolProgress[name];
   }
   S.installing = false; await refreshTools(); if (S.view === "settings") renderSettings();
+  loadUpdates(true);
 }
 
 // ---------- events ----------
@@ -664,7 +786,7 @@ document.addEventListener("click", async (ev) => {
   if (d.top !== undefined) { o.render_top = Number(d.top); return renderCreate(); }
   if (d.q) { o.download_quality = d.q; return refreshProbe(); }
   if (d.guide) { S.openGuide[d.guide] = !S.openGuide[d.guide]; return renderPublish(); }
-  if (d.disc) { if (confirm("Disconnect " + PLATFORMS[d.disc].name + "?")) { await call("publish_disconnect", { provider: d.disc }); await loadPublish(); renderPublish(); } return; }
+  if (d.disc) { if (await askConfirm({ title: "Disconnect " + PLATFORMS[d.disc].name + "?", text: "You can connect it again later.", label: "Disconnect" })) { await call("publish_disconnect", { provider: d.disc }); await loadPublish(); renderPublish(); } return; }
   if (d.copy) { try { await navigator.clipboard.writeText(d.copy); toast("Copied"); } catch (e) { toast(d.copy); } return; }
   if (d.open) return T.opener.openUrl(d.open);
   const id = d.id;
@@ -685,7 +807,7 @@ document.addEventListener("click", async (ev) => {
     }
     case "cancel": return call("cancel_task", { id: S.taskId });
     case "resume": await call("resume_task", { id: S.taskId }); return;
-    case "del-task": if (confirm("Delete this video and all of its clips?")) { await call("delete_task", { id: S.taskId }); go("library"); } return;
+    case "del-task": if (await askConfirm({ title: "Delete this video?", text: "Its clips are deleted from this PC too. This cannot be undone.", label: "Delete" })) { await call("delete_task", { id: S.taskId }); go("library"); } return;
     case "zip": {
       const dest = await T.dialog.save({ defaultPath: (S.task.title || "clips").replace(/[\\/:*?"<>|]/g, " ").slice(0, 60) + ".zip", filters: [{ name: "ZIP", extensions: ["zip"] }] });
       if (dest) { const n = await call("export_zip", { taskId: S.taskId, dest }); toast(`Saved ${n} clips`); T.opener.revealItemInDir(dest); }
@@ -701,7 +823,7 @@ document.addEventListener("click", async (ev) => {
         const name = (await call("suggested_name", { clipId: id })).replace(/\.mp4$/i, "") + "_kit.zip";
         const dest = await T.dialog.save({ defaultPath: name, filters: [{ name: "ZIP", extensions: ["zip"] }] });
         if (dest) { await invoke("save_kit", { clipId: id, dest }); toast("Publish kit saved"); T.opener.revealItemInDir(dest); }
-      } catch (err) { toast(String(err), true); }
+      } catch (err) { toastError(err); }
       el.disabled = false; el.textContent = label; return;
     }
     case "kit-write": {
@@ -713,7 +835,7 @@ document.addEventListener("click", async (ev) => {
         $("#p-title").value = k.youtube_title;
         $("#p-desc").value = only("tiktok") ? k.tiktok_caption : only("facebook") ? k.facebook_caption : k.youtube_description;
         toast("Text written. Check it before you publish.");
-      } catch (err) { toast(String(err), true); }
+      } catch (err) { toastError(err); }
       el.disabled = false; el.textContent = "Write with AI"; return;
     }
     case "save": {
@@ -722,7 +844,7 @@ document.addEventListener("click", async (ev) => {
       if (dest) { await call("save_clip", { clipId: id, dest }); toast("Clip saved"); T.opener.revealItemInDir(dest); }
       return;
     }
-    case "del-clip": if (confirm("Delete this clip?")) { await call("delete_clip", { clipId: id }); S.clips = S.clips.filter((c) => c.id !== id); S.selected.delete(id); renderTask(); } return;
+    case "del-clip": if (await askConfirm({ title: "Delete this clip?", text: "The clip file is removed from this PC.", label: "Delete" })) { await call("delete_clip", { clipId: id }); S.clips = S.clips.filter((c) => c.id !== id); S.selected.delete(id); renderTask(); } return;
     case "ai-run": {
       const prompt = $("#ai-prompt").value.trim();
       if (!prompt) { toast("Describe the change you want first.", true); return; }
@@ -731,7 +853,7 @@ document.addEventListener("click", async (ev) => {
         const r = await invoke("ai_edit", { clipId: S.editor.clip.id, prompt });
         S.editor = null; renderEditor(); upsertClip(r.clip);
         toast(r.summary + (r.notes.length ? " Skipped: " + r.notes.join(" ") : ""));
-      } catch (err) { toast(String(err), true); el.disabled = false; el.textContent = "Edit with AI"; }
+      } catch (err) { toastError(err); el.disabled = false; el.textContent = "Edit with AI"; }
       return;
     }
     case "close-editor": S.editor = null; return renderEditor();
@@ -746,7 +868,7 @@ document.addEventListener("click", async (ev) => {
     case "save-settings": return saveSettings();
     case "test-groq": {
       await saveSettings(true); el.disabled = true; el.innerHTML = '<span class="btn-spin"></span>Testing…';
-      try { await invoke("test_groq"); toast("Groq works"); } catch (err) { toast(String(err), true); }
+      try { await invoke("test_groq"); toast("Groq works"); } catch (err) { toastError(err); }
       S.groq = await invoke("groq_status"); renderSettings(); return;
     }
     case "outro-save": {
@@ -761,7 +883,19 @@ document.addEventListener("click", async (ev) => {
       await call("outro_set_logo", { path: f }); S.outroPreview = null; $("#outro-preview").innerHTML = '<div class="sk" style="width:100%;height:100%"></div>';
       toast("Logo changed"); return loadOutroPreview();
     }
-    case "test-llm": await saveSettings(true); el.disabled = true; try { toast(await call("test_llm")); } finally { el.disabled = false; } return;
+    case "test-llm": {
+      const box = $("#ai-test"); const label = "Save & test AI connection";
+      el.disabled = true; el.innerHTML = '<span class="btn-spin"></span>Testing…';
+      box.innerHTML = `<div class="errcard testing"><div class="spin"></div><div class="grow"><b>Asking the model…</b><p class="muted small">This takes a few seconds.</p></div></div>`;
+      try {
+        await saveSettings(true); const r = await invoke("test_llm"); box.innerHTML = okCard(r.name + " works", `It answered in ${(r.ms / 1000).toFixed(1)} s.`); }
+      catch (err) { box.innerHTML = errorCard(errInfo(err)); }
+      el.disabled = false; el.textContent = label; loadAiUsage(); return;
+    }
+    case "err-settings": return go("settings");
+    case "recheck-updates": return loadUpdates(true);
+    case "wake-models": await invoke("ai_reset_rest"); toast("All models will be tried again"); return loadAiUsage();
+    case "open-knowledge": return call("open_folder", { which: "knowledge" });
     case "install-all": return installTools(S.tools.filter((t) => !t.installed).map((t) => t.name).filter((n) => n !== "ffprobe" || !S.tools.find((t) => t.name === "ffmpeg" && !t.installed)));
     case "add-font": {
       const p = await T.dialog.open({ multiple: false, filters: [{ name: "Font", extensions: ["ttf", "otf"] }] });
@@ -779,7 +913,7 @@ document.addEventListener("click", async (ev) => {
       try {
         await invoke("publish_clip", { clipId: P.clip.id, platforms: [...P.platforms], title: $("#p-title").value, description: $("#p-desc").value, privacy: $("#p-privacy").value, madeForKids: $("#p-kids").checked });
         S.publishClip = null; renderPublishModal(); toast("Upload started. Follow it under Publishing."); go("publish");
-      } catch (err) { toast(String(err), true); }
+      } catch (err) { toastError(err); }
       return;
     }
     case "yt-import": {
@@ -792,7 +926,7 @@ document.addEventListener("click", async (ev) => {
     case "fb-connect": {
       el.disabled = true; el.textContent = "Connecting…";
       try { await invoke("facebook_connect", { appId: $("#fb-id").value, appSecret: $("#fb-secret").value, token: $("#fb-token").value }); toast("Facebook connected"); }
-      catch (err) { toast(String(err), true); }
+      catch (err) { toastError(err); }
       await loadPublish(); renderPublish(); return;
     }
     case "tt-save": await call("tiktok_configure", { key: $("#tt-key").value, secret: $("#tt-secret").value }); toast("TikTok keys saved"); await loadPublish(); renderPublish(); return;
@@ -820,7 +954,7 @@ document.addEventListener("change", async (ev) => {
   if (el.id === "f-section") { o.section_start = el.checked ? 0 : null; o.section_end = el.checked ? Math.floor(S.probe?.data?.duration || 60) : null; refreshProbe(); }
   if (el.id === "fb-page") { await call("facebook_select", { id: el.value }); toast("Page selected"); }
   if (el.dataset.plat) { el.checked ? S.publishClip.platforms.add(el.dataset.plat) : S.publishClip.platforms.delete(el.dataset.plat); renderPublishModal(); }
-  if (el.id === "s-prov") { readSettings(); const P = PROVIDERS.find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[2]}`; renderSettings(); }
+  if (el.id === "s-prov") { readSettings(); const P = [...PROVIDERS, ...PAID_PROVIDERS].find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[0] === "ollama" ? (S.ollama && S.ollama[0]) || "" : P[2]}`; renderSettings(); loadAiUsage(); }
   if ("rerender" in el.dataset) { readSettings(); await saveSettings(true); renderSettings(); }
   if (el.dataset.pick) { el.checked ? S.selected.add(el.dataset.pick) : S.selected.delete(el.dataset.pick); el.closest(".clip").classList.toggle("sel", el.checked); refreshHead(); }
   if (el.dataset.export && el.value) {

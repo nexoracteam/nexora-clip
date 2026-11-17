@@ -91,6 +91,87 @@ pub async fn status(state: &State) -> Vec<ToolStatus> {
     list
 }
 
+// ---------- is there a newer version? ----------
+
+/// 1.2.10 vs 1.2.9: the leading numbers of a version, compared part by part.
+fn nums(v: &str) -> Vec<u64> {
+    let start = v.find(|c: char| c.is_ascii_digit()).unwrap_or(v.len());
+    v[start..].split(|c: char| !c.is_ascii_digit()).take_while(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect()
+}
+
+pub fn is_newer(latest: &str, current: &str) -> bool {
+    let (l, c) = (nums(latest), nums(current));
+    if l.is_empty() || c.is_empty() {
+        return false;
+    }
+    l > c
+}
+
+static UPDATES: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> = std::sync::Mutex::new(None);
+
+async fn github_tag(state: &State, repo: &str) -> Option<String> {
+    let v: serde_json::Value = state.http.get(format!("https://api.github.com/repos/{repo}/releases/latest")).header("Accept", "application/vnd.github+json").timeout(std::time::Duration::from_secs(12)).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
+    v["tag_name"].as_str().map(String::from)
+}
+
+/// For each tool: what is installed, what is newest, and whether the Update button should be live.
+pub async fn updates(state: &State, force: bool) -> serde_json::Value {
+    if !force {
+        if let Some((t, v)) = UPDATES.lock().unwrap().as_ref() {
+            if t.elapsed() < std::time::Duration::from_secs(1200) {
+                return v.clone();
+            }
+        }
+    }
+    let list = status(state).await;
+    let version_of = |name: &str| list.iter().find(|t| t.name == name).map(|t| t.version.clone()).unwrap_or_default();
+    let installed = |name: &str| list.iter().find(|t| t.name == name).map(|t| t.installed).unwrap_or(false);
+    let http_text = |url: &'static str| {
+        let h = state.http.clone();
+        async move { h.get(url).timeout(std::time::Duration::from_secs(12)).send().await.ok()?.error_for_status().ok()?.text().await.ok() }
+    };
+    let (ff, ytdlp, deno, whisper) = tokio::join!(
+        http_text("https://www.gyan.dev/ffmpeg/builds/release-version"),
+        github_tag(state, "yt-dlp/yt-dlp"),
+        github_tag(state, "denoland/deno"),
+        async {
+            let v: serde_json::Value = state.http.get("https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=20").header("Accept", "application/vnd.github+json").timeout(std::time::Duration::from_secs(12)).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
+            v.as_array()?.iter().find(|r| r["assets"].as_array().map(|a| a.iter().any(|x| x["name"].as_str() == Some("whisper-bin-x64.zip"))).unwrap_or(false)).map(|r| (r["tag_name"].as_str().unwrap_or("").to_string(), r["published_at"].as_str().unwrap_or("").to_string()))
+        }
+    );
+    let mut rows = Vec::new();
+    let mut put = |name: &str, current: String, latest: Option<String>, update: bool| {
+        rows.push(serde_json::json!({"name": name, "current": current, "latest": latest.clone().unwrap_or_default(), "checked": latest.is_some(), "update": update && installed(name) || (!installed(name) && latest.is_some())}));
+    };
+    let ff_latest = ff.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    for name in ["ffmpeg", "ffprobe"] {
+        let cur = version_of(name);
+        let upd = ff_latest.as_ref().map(|l| { let c = nums(cur.split("version").nth(1).unwrap_or(&cur)); c.is_empty() || is_newer(l, &cur.split("version").nth(1).unwrap_or(&cur).trim().to_string()) }).unwrap_or(false);
+        put(name, cur, ff_latest.clone(), upd);
+    }
+    let cur = version_of("yt-dlp");
+    let upd = ytdlp.as_ref().map(|l| is_newer(l, &cur)).unwrap_or(false);
+    put("yt-dlp", cur, ytdlp, upd);
+    let cur = version_of("deno");
+    let upd = deno.as_ref().map(|l| is_newer(l, cur.trim_start_matches("deno "))).unwrap_or(false);
+    put("deno", cur, deno, upd);
+    // whisper.cpp keeps no version number: compare when it was installed with when the newest build was published.
+    let exe_time = whisper_exe(state).and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+    let upd = match (&whisper, exe_time) {
+        (Some((_, published)), Some(t)) => chrono::DateTime::parse_from_rfc3339(published).map(|p| chrono::DateTime::<chrono::Utc>::from(t) < p.with_timezone(&chrono::Utc)).unwrap_or(false),
+        _ => false,
+    };
+    put("whisper", if exe_time.is_some() { "installed".into() } else { String::new() }, whisper.map(|(t, _)| t), upd);
+    rows.push(serde_json::json!({"name": "whisper-model", "current": version_of("whisper-model"), "latest": "", "checked": true, "update": !installed("whisper-model")}));
+    let out = serde_json::Value::Array(rows);
+    *UPDATES.lock().unwrap() = Some((std::time::Instant::now(), out.clone()));
+    out
+}
+
+pub fn forget_updates() {
+    *UPDATES.lock().unwrap() = None;
+}
+
 pub async fn download_file(
     http: &reqwest::Client,
     url: &str,
@@ -150,6 +231,7 @@ fn unzip_flat(zip_path: &Path, dest_dir: &Path, keep: impl Fn(&str) -> bool) -> 
 }
 
 pub async fn install(state: &State, app: &AppHandle, name: &str) -> Result<()> {
+    forget_updates();
     let tools = state.data_dir.join("tools");
     let emit = |fraction: f64, message: &str| {
         let _ = app.emit("tool-progress", serde_json::json!({"name": name, "fraction": fraction, "message": message}));
@@ -244,4 +326,17 @@ pub async fn ensure_downloader(state: &State, app: &AppHandle) -> Result<()> {
 
 fn tool_path(state: &State, name: &str) -> PathBuf {
     tool(state, name)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn versions_compare_by_number_not_by_text() {
+        assert!(super::is_newer("2026.11.2", "2026.10.26"));
+        assert!(super::is_newer("2.10.0", "2.9.8"));
+        assert!(!super::is_newer("2.9.8", "2.9.8"));
+        assert!(!super::is_newer("v2.9.8", "deno 2.9.8 (stable)"));
+        assert!(super::is_newer("9.1", "9.0.2"));
+        assert!(!super::is_newer("", "1.0"));
+    }
 }

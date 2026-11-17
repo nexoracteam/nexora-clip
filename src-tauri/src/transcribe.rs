@@ -95,6 +95,7 @@ async fn whisper_local(
         .arg("-m").arg(&model)
         .arg("-f").arg(wav)
         .args(["-oj", "-ml", "1", "-sow", "-pp", "-np", "-l", &lang, "-t", &threads.to_string()])
+        .args(if settings.vocab.is_empty() { vec![] } else { vec!["--prompt".to_string(), crate::knowledge::prompt_hint(&settings.vocab)] })
         .arg("-of").arg(&out_base)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -173,6 +174,10 @@ async fn assemblyai(
         .json().await?;
     let upload_url = up["upload_url"].as_str().ok_or_else(|| anyhow!("AssemblyAI returned no upload URL"))?;
     let mut body = serde_json::json!({"audio_url": upload_url, "speaker_labels": true, "punctuate": true, "format_text": true});
+    if !settings.vocab.is_empty() {
+        body["word_boost"] = serde_json::json!(settings.vocab);
+        body["boost_param"] = serde_json::json!("high");
+    }
     let lang = settings.transcription_language.trim();
     if lang.is_empty() { body["language_detection"] = Value::Bool(true); } else { body["language_code"] = Value::String(lang.into()); }
     let created: Value = state.http.post("https://api.assemblyai.com/v2/transcript")
@@ -261,6 +266,9 @@ async fn openai_compatible(
             .text("model", model)
             .text("response_format", "verbose_json")
             .text("timestamp_granularities[]", "word");
+        if !settings.vocab.is_empty() {
+            form = form.text("prompt", crate::knowledge::prompt_hint(&settings.vocab));
+        }
         let lang = settings.transcription_language.trim();
         if !lang.is_empty() {
             form = form.text("language", lang.split(['_', '-']).next().unwrap_or(lang).to_lowercase());

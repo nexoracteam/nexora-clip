@@ -43,13 +43,43 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
     match status.as_u16() {
         400 if short.to_lowercase().contains("api key") => anyhow!("Google rejected the API key. Check it in Settings."),
         401 | 403 => anyhow!("Google rejected the request ({status}): {short}"),
-        429 => anyhow!("Google is rate limiting this key. Try again in a minute."),
+        429 => anyhow!("Gemini quota used up (429): {short}"),
         _ => anyhow!("Gemini error {status}: {short}"),
     }
 }
 
-/// One generateContent call that must answer with JSON matching `schema`.
+/// generateContent through the chosen model, then through the other free Gemini models if it is out of quota or unavailable.
 pub async fn generate(state: &State, key: &str, model: &str, system: &str, parts: Vec<Value>, schema: Value, timeout_secs: u64) -> Result<Value> {
+    let mut list: Vec<String> = vec![model.to_string()];
+    list.extend(crate::llm::FREE_GEMINI.iter().map(|m| m.to_string()));
+    let mut seen = std::collections::HashSet::new();
+    list.retain(|m| seen.insert(m.clone()));
+    let mut last = anyhow!("Gemini did not answer.");
+    for m in list {
+        let id = format!("google-gla:{m}");
+        if crate::quota::cooling(&id) {
+            continue;
+        }
+        match generate_one(state, key, &m, system, parts.clone(), schema.clone(), timeout_secs).await {
+            Ok(v) => {
+                crate::quota::note(state, &id, true);
+                return Ok(v);
+            }
+            Err(e) => {
+                crate::quota::note(state, &id, false);
+                let text = e.to_string();
+                if crate::quota::is_quota(&text) {
+                    crate::quota::rest(&id, crate::quota::retry_seconds(&text).unwrap_or(1800));
+                }
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
+/// One generateContent call that must answer with JSON matching `schema`.
+async fn generate_one(state: &State, key: &str, model: &str, system: &str, parts: Vec<Value>, schema: Value, timeout_secs: u64) -> Result<Value> {
     let body = json!({
         "systemInstruction": { "parts": [ text(system) ] },
         "contents": [ { "role": "user", "parts": parts } ],
@@ -72,7 +102,7 @@ pub async fn generate(state: &State, key: &str, model: &str, system: &str, parts
         let raw = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             last = api_error(status, &raw);
-            if matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) {
+            if matches!(status.as_u16(), 500 | 502 | 503 | 504) {
                 continue;
             }
             return Err(last);

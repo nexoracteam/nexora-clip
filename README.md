@@ -30,7 +30,9 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 **Transcription.** The video's own subtitles when it has good ones (fast and free), otherwise local whisper.cpp (offline), AssemblyAI, Groq Whisper or OpenAI Whisper.
 
-**Picking moments.** Gemini, OpenAI, Claude, OpenRouter, Groq, Ollama or any OpenAI-compatible server. Long videos are read in overlapping 12-minute windows, then ranked together. Workflows: highlights, series (Part 1..N), topic, recap and trailer, plus free-text instructions. Every clip gets a score for hook, engagement, value and shareability.
+**Picking moments.** Free ways first: Gemini (free tier), Groq, OpenRouter's free models and Ollama on your PC. If one is busy or out of quota, the next free one answers by itself, and with no AI at all clips are still made, picked by sound and speech. Paid providers (OpenAI, Claude) keep working if you already use them. Long videos are read in overlapping 12-minute windows, then ranked together. Workflows: highlights, series (Part 1..N), topic, recap and trailer, plus free-text instructions. Every clip gets a score for hook, engagement, value and shareability.
+
+**Game knowledge.** For GTA VI videos the AI knows the characters, places and release facts, speech recognition is told the names (Lucia, Leonida, Vice City…), and captions get their spelling and capitals right. Add your own notes from Settings. Hindi and Urdu captions can be shown in Roman letters.
 
 **Videos with little speech.** With a Google key, Gemini watches a small 360p copy to choose moments, writes hooks from frames of the clip, and finds subtitles burned into the picture so they can be cropped off. Without it, moments are picked from scene changes and loudness.
 
@@ -84,7 +86,7 @@ Requires Rust (MSVC toolchain) and Node.js.
 ```bash
 npm install
 npx tauri build      # installer in src-tauri/target/release/bundle/nsis/
-cargo test           # in src-tauri: 47 unit tests
+cargo test           # in src-tauri: 61 unit tests
 ```
 
 For development: `npx tauri dev`.

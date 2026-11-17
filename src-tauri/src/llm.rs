@@ -124,34 +124,194 @@ async fn call_once(state: &State, settings: &Settings, model_name: &str, system:
     Ok(text)
 }
 
-/// Ask the model for one JSON object. Retries transient failures and bad JSON.
-pub async fn json_call(state: &State, settings: &Settings, model_name: &str, system: &str, user: &str, timeout_secs: u64) -> Result<Value> {
-    if let Some(v) = try_groq(state, settings, model_name, system, user, timeout_secs, false).await? {
-        return Ok(v);
-    }
-    if let Some(problem) = config_error(settings, model_name) {
-        let groq_note = if settings.groq_api_key.trim().is_empty() { String::new() } else { format!(" (Groq: {})", with_groq(|g| g.message.clone())) };
-        bail!("{problem}{groq_note}");
-    }
-    let mut last = String::new();
-    for attempt in 0..3u64 {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
+/// Gemini models with a free tier, best first. Each has its own daily allowance, so when one is used up the next still works.
+pub const FREE_GEMINI: [&str; 4] = ["gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"];
+/// OpenRouter models that cost nothing (the ":free" ones).
+pub const FREE_OPENROUTER: [&str; 2] = ["openai/gpt-oss-20b:free", "meta-llama/llama-3.3-70b-instruct:free"];
+
+fn pretty(model_name: &str) -> String {
+    let (p, m) = split_model(model_name);
+    let p = match p.as_str() {
+        "google-gla" | "google" => "Gemini",
+        "openrouter" => "OpenRouter",
+        "ollama" => "Ollama (this PC)",
+        "groq" => "Groq",
+        "openai" => "OpenAI",
+        "anthropic" => "Claude",
+        other => other,
+    };
+    format!("{p} {m}")
+}
+
+static OLLAMA: std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>> = std::sync::Mutex::new(None);
+
+/// Models installed in a local Ollama, if it is running (checked at most once a minute).
+pub async fn ollama_models(state: &State, settings: &Settings) -> Vec<String> {
+    if let Some((t, v)) = OLLAMA.lock().unwrap().as_ref() {
+        if t.elapsed() < Duration::from_secs(60) {
+            return v.clone();
         }
-        match call_once(state, settings, model_name, system, user, Duration::from_secs(timeout_secs)).await {
+    }
+    let base = settings.ollama_base_url.trim().trim_end_matches('/').trim_end_matches("/v1").to_string();
+    let base = if base.is_empty() { "http://localhost:11434".to_string() } else { base };
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(r) = state.http.get(format!("{base}/api/tags")).timeout(Duration::from_millis(1200)).send().await {
+        if let Ok(v) = r.json::<Value>().await {
+            for m in v["models"].as_array().cloned().unwrap_or_default() {
+                if let Some(n) = m["name"].as_str() {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    // Instruction-tuned general models first.
+    names.sort_by_key(|n| {
+        let l = n.to_lowercase();
+        ["qwen2.5", "qwen3", "llama3", "gemma", "mistral", "phi"].iter().position(|k| l.contains(k)).unwrap_or(9)
+    });
+    names.retain(|n| !n.to_lowercase().contains("embed"));
+    *OLLAMA.lock().unwrap() = Some((std::time::Instant::now(), names.clone()));
+    names
+}
+
+/// The models to try, in order: the chosen one, then free Gemini siblings, free OpenRouter, then anything local.
+async fn candidates(state: &State, settings: &Settings, model_name: &str) -> Vec<String> {
+    let mut v: Vec<String> = vec![model_name.to_string()];
+    if !settings.google_api_key.trim().is_empty() {
+        v.extend(FREE_GEMINI.iter().map(|m| format!("google-gla:{m}")));
+    }
+    if !settings.openrouter_api_key.trim().is_empty() {
+        v.extend(FREE_OPENROUTER.iter().map(|m| format!("openrouter:{m}")));
+    }
+    for m in ollama_models(state, settings).await.into_iter().take(2) {
+        v.push(format!("ollama:{m}"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|m| seen.insert(m.clone()));
+    v
+}
+
+/// One model, with retries for short hiccups. A "quota used up" answer is not retried: the model rests instead.
+async fn attempt_model(state: &State, settings: &Settings, cand: &str, system: &str, user: &str, timeout_secs: u64) -> std::result::Result<Value, String> {
+    let mut last = String::new();
+    for attempt in 0..2u64 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        match call_once(state, settings, cand, system, user, Duration::from_secs(timeout_secs)).await {
             Ok(text) => match extract_json(&text) {
                 Ok(v) => return Ok(v),
                 Err(e) => last = e.to_string(),
             },
             Err(f) => {
                 last = f.message;
+                if crate::quota::is_quota(&last) {
+                    crate::quota::rest(cand, crate::quota::retry_seconds(&last).unwrap_or(1800));
+                    return Err(last);
+                }
                 if !f.transient {
-                    break;
+                    return Err(last);
                 }
             }
         }
     }
-    bail!("AI request failed: {last}")
+    Err(last)
+}
+
+/// A short, plain reason for one failed model.
+fn short_reason(raw: &str) -> String {
+    let t = raw.to_lowercase();
+    if crate::quota::is_quota(raw) {
+        "free limit used up for today".into()
+    } else if t.contains("api key") || t.contains("401") || t.contains("403") || t.contains("unauthorized") {
+        "key not accepted".into()
+    } else if t.contains("404") || t.contains("not found") {
+        "model not available".into()
+    } else if t.contains("network") || t.contains("timed out") || t.contains("connect") {
+        "no connection".into()
+    } else {
+        "did not answer".into()
+    }
+}
+
+/// Ask the model for one JSON object. Falls back through other free models so one empty quota never stops the work.
+pub async fn json_call(state: &State, settings: &Settings, model_name: &str, system: &str, user: &str, timeout_secs: u64) -> Result<Value> {
+    if let Some(v) = try_groq(state, settings, model_name, system, user, timeout_secs, false).await? {
+        crate::quota::note(state, &format!("groq:{}", groq_model(settings)), true);
+        return Ok(v);
+    }
+    let mut notes: Vec<String> = Vec::new();
+    let mut tried_any = false;
+    for cand in candidates(state, settings, model_name).await {
+        if config_error(settings, &cand).is_some() {
+            if cand == model_name {
+                notes.push(format!("{}: {}", pretty(&cand), config_error(settings, &cand).unwrap_or_default().trim_end_matches('.')));
+            }
+            continue;
+        }
+        if crate::quota::cooling(&cand) {
+            notes.push(format!("{}: resting (free limit used up)", pretty(&cand)));
+            continue;
+        }
+        tried_any = true;
+        match attempt_model(state, settings, &cand, system, user, timeout_secs).await {
+            Ok(v) => {
+                crate::quota::note(state, &cand, true);
+                if cand != model_name {
+                    crate::applog::log(&format!("AI: {} was busy, {} answered", pretty(model_name), pretty(&cand)));
+                }
+                return Ok(v);
+            }
+            Err(e) => {
+                crate::quota::note(state, &cand, false);
+                notes.push(format!("{}: {}", pretty(&cand), short_reason(&e)));
+                crate::applog::log(&format!("AI {} failed: {}", cand, e.chars().take(200).collect::<String>()));
+            }
+        }
+    }
+    if !tried_any && config_error(settings, model_name).is_some() && notes.len() <= 1 {
+        bail!("[ai_setup] {}", config_error(settings, model_name).unwrap_or_default());
+    }
+    bail!("[ai_busy] No AI model could answer right now. {}", notes.join(" · "))
+}
+
+/// Test exactly one model (no fallback) so the Settings button tells the truth about it.
+pub async fn test_model(state: &State, settings: &Settings, model_name: &str) -> Result<Value> {
+    if let Some(problem) = config_error(settings, model_name) {
+        bail!("[ai_setup] {problem}");
+    }
+    let started = std::time::Instant::now();
+    match attempt_model(state, settings, model_name, "You answer with JSON only.", "Return exactly this JSON object: {\"ok\": true}", 60).await {
+        Ok(v) if v["ok"].as_bool() == Some(true) => {
+            crate::quota::note(state, model_name, true);
+            Ok(json!({"model": model_name, "name": pretty(model_name), "ms": started.elapsed().as_millis() as u64}))
+        }
+        Ok(_) => bail!("[ai_bad_answer] {} answered, but not with the test answer. Pick another model.", pretty(model_name)),
+        Err(e) => {
+            crate::quota::note(state, model_name, false);
+            if crate::quota::is_quota(&e) {
+                bail!("[ai_quota] {} has used up its free allowance. {}", pretty(model_name), crate::quota::retry_seconds(&e).map(|s| format!("It resets in about {}.", human_wait(s))).unwrap_or_else(|| "It resets daily.".into()));
+            }
+            let l = e.to_lowercase();
+            if l.contains("api key") || l.contains("401") || l.contains("403") || l.contains("unauthorized") || l.contains("permission") {
+                bail!("[ai_key] {} did not accept the key. Check the key in Settings.", pretty(model_name));
+            }
+            if l.contains("404") || l.contains("not found") {
+                bail!("[ai_model] {} is not available for this key. Pick another model.", pretty(model_name));
+            }
+            bail!("[ai_down] {} did not answer. {}", pretty(model_name), short_reason(&e))
+        }
+    }
+}
+
+pub fn human_wait(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{} h {} min", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{secs} s")
+    }
 }
 
 // ---------- Groq first, configured model as fallback ----------
@@ -317,6 +477,20 @@ mod tests {
         assert!(config_error(&s, "google-gla:gemini-3-flash-preview").is_some());
         assert!(config_error(&s, "ollama:llama3.1").is_none());
         assert!(config_error(&s, "weird:model").unwrap().contains("Unsupported"));
+    }
+
+    #[test]
+    fn waits_read_naturally() {
+        assert_eq!(human_wait(45), "45 s");
+        assert_eq!(human_wait(600), "10 min");
+        assert_eq!(human_wait(8000), "2 h 13 min");
+    }
+
+    #[test]
+    fn reasons_are_short_and_plain() {
+        assert_eq!(short_reason("google-gla returned 429 Too Many Requests: quota"), "free limit used up for today");
+        assert_eq!(short_reason("returned 403 permission"), "key not accepted");
+        assert_eq!(short_reason("weird"), "did not answer");
     }
 
     #[test]

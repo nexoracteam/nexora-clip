@@ -101,13 +101,19 @@ pub async fn generate(state: &State, settings: &Settings, clip: &Clip, task: &Ta
     if text.trim().is_empty() && clip.doc.hook_title.is_none() {
         bail!("This clip has no text to write about.");
     }
-    let user = format!(
+    let mut user = format!(
         "Video title: {}\nKey topics: {}\nOn-screen hook of the clip: {}\nWhat is said in the clip:\n{}",
         task.title,
         task.key_topics.join(", "),
         clip.doc.hook_title.clone().unwrap_or_default(),
         text
     );
+    if let Some(p) = crate::knowledge::pack_for(settings, &format!("{} {}", task.title, clip.doc.text), &[]) {
+        user.push_str(&format!("
+
+{}
+Prefer these hashtags when they fit: {}.", crate::knowledge::block(p, &state.data_dir), p.hashtags.join(", ")));
+    }
     let v = llm::json_call(state, settings, &settings.llm, SYSTEM, &user, 90).await?;
     let fallback = clip.doc.hook_title.clone().unwrap_or_else(|| task.title.clone());
     let kit = clean(&v, &fallback);

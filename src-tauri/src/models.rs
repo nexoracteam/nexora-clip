@@ -45,12 +45,19 @@ pub struct Settings {
     pub yt_subtitles: bool,
     /// Let Gemini look at frames or a small copy of the video (hooks, quiet videos, burned-in subtitles).
     pub gemini_vision: bool,
+    /// auto (noticed from the video) | gta6 | off
+    pub knowledge_profile: String,
+    /// Show Hindi and Urdu captions in Roman letters.
+    pub roman_captions: bool,
+    /// Words for the speech-to-text to expect (set per task, never saved).
+    #[serde(skip)]
+    pub vocab: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            llm: "google-gla:gemini-3-flash-preview".into(),
+            llm: "google-gla:gemini-3.1-flash-lite".into(),
             rerank_llm: String::new(),
             google_api_key: String::new(),
             openai_api_key: String::new(),
@@ -85,6 +92,9 @@ impl Default for Settings {
             notify_done: true,
             yt_subtitles: true,
             gemini_vision: true,
+            knowledge_profile: "auto".into(),
+            roman_captions: true,
+            vocab: Vec::new(),
         }
     }
 }

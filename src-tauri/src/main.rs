@@ -5,6 +5,9 @@ mod applog;
 mod secret;
 mod gemini;
 mod vision;
+mod quota;
+mod knowledge;
+mod roman;
 mod subs;
 mod kit;
 mod ai_edit;
@@ -59,6 +62,11 @@ async fn tools_status(state: S<'_>) -> R<Vec<tools::ToolStatus>> {
 }
 
 #[tauri::command]
+async fn tool_updates(state: S<'_>, force: Option<bool>) -> R<Value> {
+    Ok(tools::updates(&state, force.unwrap_or(false)).await)
+}
+
+#[tauri::command]
 async fn install_tool(state: S<'_>, app: AppHandle, name: String) -> R<()> {
     tools::install(&state, &app, &name).await.map_err(e)
 }
@@ -75,12 +83,24 @@ async fn app_info(state: S<'_>) -> R<Value> {
 }
 
 #[tauri::command]
-async fn test_llm(state: S<'_>) -> R<String> {
+async fn test_llm(state: S<'_>) -> R<Value> {
     let settings = state.settings();
-    let v = llm::json_call(&state, &settings, &settings.llm, "You answer with JSON only.", "Return exactly this JSON object: {\"ok\": true}", 60)
-        .await
-        .map_err(e)?;
-    Ok(format!("{} answered: {}", settings.llm, v))
+    llm::test_model(&state, &settings, &settings.llm).await.map_err(e)
+}
+
+#[tauri::command]
+async fn list_ollama(state: S<'_>) -> R<Vec<String>> {
+    Ok(llm::ollama_models(&state, &state.settings()).await)
+}
+
+#[tauri::command]
+fn ai_usage(state: S) -> Value {
+    quota::usage(&state)
+}
+
+#[tauri::command]
+fn ai_reset_rest() {
+    quota::reset();
 }
 
 #[tauri::command]
@@ -161,7 +181,7 @@ impl InnerClone for state::State {
 }
 
 /// Catch the obvious problems before a long download and transcription are wasted on them.
-fn preflight(state: &state::State) -> Result<(), String> {
+fn preflight(state: &state::State, workflow: &str) -> Result<(), String> {
     let s = state.settings();
     if !ffmpeg::tool_works(state, "ffmpeg") || !ffmpeg::tool_works(state, "ffprobe") {
         return Err("FFmpeg is missing. Open Settings → Tools and press \"Install everything missing\".".into());
@@ -177,10 +197,11 @@ fn preflight(state: &state::State) -> Result<(), String> {
         "openai" if s.openai_api_key.trim().is_empty() => return Err("Add your OpenAI API key in Settings to transcribe with OpenAI.".into()),
         _ => {}
     }
+    // Highlights still work without any AI (clips are picked by sound). The other workflows need one.
     let groq_ready = s.groq_enabled && !s.groq_api_key.trim().is_empty();
-    if !groq_ready {
+    if !groq_ready && workflow != "highlights" {
         if let Some(problem) = llm::config_error(&s, &s.llm) {
-            return Err(format!("{problem} (Settings → AI model)"));
+            return Err(format!("[ai_setup] {problem} (Settings → AI model)"));
         }
     }
     if ffmpeg::free_space(&state.data_dir) < 3_000_000_000 {
@@ -196,8 +217,8 @@ fn create_task(state: S, app: AppHandle, input: NewTask) -> R<Task> {
     if url.is_empty() && path.is_empty() {
         return Err("Paste a video link or choose a video file.".into());
     }
-    preflight(&state)?;
     let workflow = input.workflow.unwrap_or_else(|| "highlights".into());
+    preflight(&state, &workflow)?;
     if !["highlights", "series", "topic", "recap", "trailer"].contains(&workflow.as_str()) {
         return Err(format!("Unknown workflow: {workflow}"));
     }
@@ -536,6 +557,21 @@ async fn clear_leftovers(state: S<'_>) -> R<u64> {
 fn open_folder(state: S, which: String) -> R<()> {
     let path = match which.as_str() {
         "logs" => applog::dir().unwrap_or_else(|| state.data_dir.clone()),
+        "knowledge" => {
+            // Your own GTA notes: created with a short guide the first time.
+            let dir = state.data_dir.join("knowledge");
+            let _ = std::fs::create_dir_all(&dir);
+            let file = dir.join("gta6.txt");
+            if !file.exists() {
+                let _ = std::fs::write(&file, "Add your own notes about GTA VI here. The AI reads them together with the built-in facts.
+One fact per line. Say when something is a rumour.
+
+A line that starts with Terms: adds words for speech recognition, separated by commas. Example:
+Terms: Lucia, Jason, Vice City Beach
+");
+            }
+            return std::process::Command::new("explorer").arg(&file).spawn().map(|_| ()).map_err(e);
+        }
         _ => state.data_dir.clone(),
     };
     let _ = std::fs::create_dir_all(&path);
@@ -635,7 +671,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, install_tool, app_info, test_llm, list_templates, list_fonts, add_font,
+            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
             create_task, list_tasks, get_task, cancel_task, resume_task, delete_task,
             update_clip, ai_edit, split_clip, merge_clips, delete_clip, clip_words, render_candidate, get_kit, make_kit, save_kit,
             save_clip, export_clip, export_zip, suggested_name,

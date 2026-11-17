@@ -116,7 +116,7 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
     check()?;
     state.set_task_fields(task_id, &[("status", &"processing"), ("error", &"")])?;
     emit_task(app, state, task_id);
-    let settings = state.settings();
+    let mut settings = state.settings();
     let task = state.get_task(task_id)?;
 
     // 1. source
@@ -164,6 +164,12 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
         _ => None,
     };
 
+    // Game knowledge: if the video is about a game we know, the speech-to-text is told its names.
+    let title_now = state.get_task(task_id).map(|t| t.title).unwrap_or_default();
+    if let Some(pack) = crate::knowledge::pack_for(&settings, &title_now, &[]) {
+        settings.vocab = crate::knowledge::terms(pack, &state.data_dir);
+    }
+
     // 3. transcript: the video's own subtitles when it has good ones, otherwise transcribe
     let no_section = task.options.section_start.is_none() && task.options.section_end.is_none();
     if settings.yt_subtitles && task.source_type == "url" && no_section && transcribe::load_cached(state, task_id).is_none() {
@@ -172,8 +178,34 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
             rep.set(50.0, "Using the video's subtitles (no transcription needed)");
         }
     }
-    let transcript = transcribe::transcribe(state, &settings, &source, task_id, probe.duration, cancel, |f, m| rep.set(20.0 + f * 30.0, m)).await?;
+    let mut transcript = transcribe::transcribe(state, &settings, &source, task_id, probe.duration, cancel, |f, m| rep.set(20.0 + f * 30.0, m)).await?;
     check()?;
+
+    // Put names right and show Hindi / Urdu in Roman letters (the saved transcript is updated, so every later render agrees).
+    let pack = crate::knowledge::pack_for(&settings, &title_now, &transcript.words);
+    let mut changed = 0;
+    if let Some(p) = pack {
+        changed += crate::knowledge::fix_words(p, &mut transcript.words);
+    }
+    if settings.roman_captions {
+        for w in transcript.words.iter_mut() {
+            if crate::roman::needs_roman(&w.text) {
+                w.text = crate::roman::to_roman(&w.text);
+                changed += 1;
+            }
+        }
+    }
+    if changed > 0 {
+        let _ = transcribe::save(state, task_id, &transcript);
+    }
+    // The AI gets the game's facts together with the creator's own instructions.
+    let mut ai_opts = task.options.clone();
+    if let Some(p) = pack {
+        let block = crate::knowledge::block(p, &state.data_dir);
+        ai_opts.instructions = if ai_opts.instructions.trim().is_empty() { block } else { format!("{}
+
+{}", ai_opts.instructions.trim(), block) };
+    }
 
     // 4. analysis (kept on the task so a resume never pays for it twice)
     let analysis = match state.get_analysis(task_id) {
@@ -184,7 +216,7 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
                 let mut seen: Option<Analysis> = None;
                 if let Some(key) = &vision_key {
                     rep.set(50.0, "Little speech here: Gemini is watching the video");
-                    match crate::vision::analyze(state, &settings, key, &source, &probe, &task.title, &task.options, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await {
+                    match crate::vision::analyze(state, &settings, key, &source, &probe, &task.title, &ai_opts, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await {
                         Ok(a) => seen = Some(a),
                         Err(e) if e.to_string() == "cancelled" => bail!("cancelled"),
                         Err(e) => crate::applog::log(&format!("gemini vision failed, using scene analysis: {e}")),
@@ -192,12 +224,23 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
                 }
                 if let Some(a) = seen { a } else {
                 rep.set(50.0, "Little speech here: picking moments by action and sound");
-                crate::visual::analyze(state, &settings, &source, probe.duration, &task.title, &task.options, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await?
+                crate::visual::analyze(state, &settings, &source, probe.duration, &task.title, &ai_opts, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await?
                 }
             } else if transcript.words.is_empty() {
                 bail!("No speech was found in this video. This workflow needs speech: use Highlights, which can also pick clips from action and sound.");
             } else {
-                ai::analyze(state, &settings, &transcript, &task.workflow, &task.options, probe.duration, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await?
+                match ai::analyze(state, &settings, &transcript, &task.workflow, &ai_opts, probe.duration, cancel, |f, m| rep.set(50.0 + f * 12.0, m)).await {
+                    Ok(a) => a,
+                    Err(e) if task.workflow == "highlights" && (e.to_string().starts_with("[ai_busy]") || e.to_string().starts_with("[ai_setup]")) => {
+                        // No AI could answer: still make clips, chosen by sound and cuts, titled from the speech.
+                        crate::applog::log(&format!("AI unavailable, picking by sound: {e}"));
+                        rep.set(52.0, "The AI is unavailable: picking clips by sound and speech instead");
+                        let mut a = crate::visual::analyze(state, &settings, &source, probe.duration, &task.title, &ai_opts, cancel, |f, m| rep.set(52.0 + f * 10.0, m)).await?;
+                        offline_fill(&mut a, &transcript);
+                        a
+                    }
+                    Err(e) => return Err(e),
+                }
             };
             state.set_task_fields(task_id, &[
                 ("analysis", &serde_json::to_string(&a)?),
@@ -219,10 +262,13 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
             if !todo.is_empty() {
                 rep.set(61.0, "Looking at the clips to write their hooks");
                 let found: Vec<(usize, Option<String>)> = futures_util::stream::iter(todo.into_iter().map(|i| {
-                    let (settings, source, title, key) = (&settings, &source, &task.title, key.clone());
+                    let title_with_facts = match pack { Some(p) => format!("{}
+
+{}", task.title, crate::knowledge::block(p, &state.data_dir)), None => task.title.clone() };
+                    let (settings, source, title, key) = (&settings, &source, title_with_facts, key.clone());
                     let seg = &analysis.segments[i];
                     let said = captions::clip_words(&transcript, &ClipDoc { ranges: seg.ranges.clone(), ..Default::default() }, false).words.iter().map(|w| w.text.clone()).collect::<Vec<_>>().join(" ");
-                    async move { (i, crate::vision::ground_hook(state, settings, &key, source, &seg.ranges, &said, seg.hook_title.as_deref().unwrap_or(""), title).await) }
+                    async move { (i, crate::vision::ground_hook(state, settings, &key, source, &seg.ranges, &said, seg.hook_title.as_deref().unwrap_or(""), &title).await) }
                 })).buffer_unordered(3).collect().await;
                 for (i, h) in found { hooks[i] = h; }
             }
@@ -307,6 +353,22 @@ async fn run_inner(app: &AppHandle, state: &State, task_id: &str, cancel: &Atomi
     }
     rep.set(100.0, "Done");
     Ok(())
+}
+
+/// Without an AI: give each sound-picked clip its spoken words and a hook made from the first of them.
+fn offline_fill(a: &mut Analysis, t: &Transcript) {
+    for seg in a.segments.iter_mut() {
+        let words: Vec<&str> = t.words.iter().filter(|w| seg.ranges.iter().any(|r| w.start >= r[0] && w.start < r[1])).map(|w| w.text.as_str()).collect();
+        if words.is_empty() {
+            continue;
+        }
+        seg.text = words.join(" ");
+        let hook: String = words.iter().take(7).cloned().collect::<Vec<_>>().join(" ");
+        if let Some(h) = ai::sanitize_hook_title(Some(hook.trim_end_matches(['.', ',', '!', '?']))) {
+            seg.hook_title = Some(h);
+        }
+    }
+    a.summary = format!("Picked by sound and speech, because the AI was not available. {}", a.summary);
 }
 
 pub async fn run_task(app: AppHandle, state: State, task_id: String) {
