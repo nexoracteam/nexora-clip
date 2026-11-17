@@ -78,6 +78,10 @@ Everything is cut and rendered locally. Text goes to the AI provider you choose 
 
 ## Install
 
+[![Watch the 76-second setup tutorial](docs/media/tutorial.jpg)](docs/media/tutorial.mp4)
+
+<sub>Click the picture to watch the setup tutorial: install, tools, ChatGPT or a free key, your first clip.</sub>
+
 1. Download `Nexora-Clip_<version>_x64-setup.exe` from the [latest release](https://github.com/nexoracteam/nexora-clip/releases/latest) and run it. It installs for the current user and needs no admin rights.
 2. Open **Settings**. Under **Tools**, press *Install everything missing*. FFmpeg is used from PATH when it exists; yt-dlp, Deno, whisper.cpp and the speech model are downloaded into the app's data folder.
 3. Under **AI model**, pick a provider, paste its API key and press *Save & test AI connection*.
