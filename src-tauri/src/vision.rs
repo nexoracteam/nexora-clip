@@ -79,11 +79,28 @@ pub struct Pick {
     pub score: i64,
 }
 
+/// A time as the model may write it: 12.5, "12.5", "1:05" or "00:01:05".
+pub fn seconds(v: &Value) -> Option<f64> {
+    if let Some(n) = v.as_f64() {
+        return Some(n);
+    }
+    let t = v.as_str()?.trim().trim_end_matches('s');
+    if let Ok(n) = t.parse::<f64>() {
+        return Some(n);
+    }
+    let parts: Vec<f64> = t.split(':').map(|x| x.trim().parse::<f64>()).collect::<std::result::Result<_, _>>().ok()?;
+    match parts.as_slice() {
+        [m, s] => Some(m * 60.0 + s),
+        [h, m, s] => Some(h * 3600.0 + m * 60.0 + s),
+        _ => None,
+    }
+}
+
 /// Clips from one stretch's JSON answer, moved to source time and held inside the allowed length.
 pub fn parse_picks(v: &Value, offset: f64, stretch_len: f64, max_len: f64) -> Vec<Pick> {
     let mut out = Vec::new();
     for c in v["clips"].as_array().cloned().unwrap_or_default() {
-        let (Some(s), Some(e)) = (c["start_seconds"].as_f64(), c["end_seconds"].as_f64()) else { continue };
+        let (Some(s), Some(e)) = (seconds(&c["start_seconds"]), seconds(&c["end_seconds"])) else { continue };
         let s = s.clamp(0.0, stretch_len);
         let e = e.clamp(0.0, stretch_len).min(s + max_len);
         if e - s < 5.0 {
@@ -215,7 +232,12 @@ Rules:\n- Choose up to {n_here} clips, best first. Each clip is between {min} an
         gemini::delete_file(state, key, &file_name).await;
         match answer {
             Ok(v) => {
-                picks.extend(parse_picks(&v, *start, *len, max_len));
+                let got = parse_picks(&v, *start, *len, max_len);
+                if got.is_empty() {
+                    let raw = v.to_string();
+                    crate::applog::log(&format!("gemini vision: no usable clips in the answer: {}", raw.chars().take(500).collect::<String>()));
+                }
+                picks.extend(got);
                 if summary.is_empty() { summary = v["summary"].as_str().unwrap_or("").trim().to_string(); }
                 for t in v["key_topics"].as_array().cloned().unwrap_or_default() {
                     if let Some(t) = t.as_str() { if topics.len() < 8 && !topics.iter().any(|x| x == t) { topics.push(t.to_string()); } }
@@ -355,6 +377,17 @@ mod tests {
         let p = parse_picks(&v, 1000.0, 90.0, 60.0);
         assert_eq!(p.len(), 1);
         assert_eq!((p[0].start, p[0].end, p[0].score), (1010.0, 1070.0, 100));
+    }
+
+    #[test]
+    fn times_can_be_numbers_strings_or_clock_times() {
+        assert_eq!(seconds(&json!(12.5)), Some(12.5));
+        assert_eq!(seconds(&json!("12.5")), Some(12.5));
+        assert_eq!(seconds(&json!("1:05")), Some(65.0));
+        assert_eq!(seconds(&json!("00:01:05")), Some(65.0));
+        assert_eq!(seconds(&json!("soon")), None);
+        let v = json!({"clips": [{"start_seconds": "0:10", "end_seconds": "0:40", "hook_title": "A", "what_happens": "", "score": 70, "reason": ""}]});
+        assert_eq!(parse_picks(&v, 0.0, 600.0, 60.0).len(), 1);
     }
 
     #[test]
