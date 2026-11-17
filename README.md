@@ -10,6 +10,10 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 **[Download the installer](https://github.com/nexoracteam/nexora-clip/releases/latest)** · [Features](#features) · [Layouts](#layouts) · [Publishing](#publishing) · [Privacy](#what-leaves-your-pc) · [Build](#build-from-source)
 
+[![Watch the 21-second intro](docs/media/intro.jpg)](docs/media/intro.mp4)
+
+<sub>Click the picture to watch the intro video.</sub>
+
 ![Clips picked, scored and rendered from one long video](docs/screenshots/04-clips.png)
 
 ## Screenshots
