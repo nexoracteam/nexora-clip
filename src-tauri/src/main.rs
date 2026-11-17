@@ -13,6 +13,7 @@ mod kit;
 mod ai_edit;
 mod broll;
 mod captions;
+mod chatgpt;
 mod download;
 mod editor;
 mod face;
@@ -86,6 +87,31 @@ async fn app_info(state: S<'_>) -> R<Value> {
 async fn test_llm(state: S<'_>) -> R<Value> {
     let settings = state.settings();
     llm::test_model(&state, &settings, &settings.llm).await.map_err(e)
+}
+
+#[tauri::command]
+fn chatgpt_status(state: S) -> Value {
+    chatgpt::status(&state)
+}
+
+#[tauri::command]
+async fn chatgpt_login(state: S<'_>, app: AppHandle) -> R<()> {
+    chatgpt::login(app, Arc::clone(&state)).await.map_err(e)
+}
+
+#[tauri::command]
+async fn chatgpt_disconnect(state: S<'_>) -> R<()> {
+    chatgpt::disconnect(&state).await.map_err(e)
+}
+
+#[tauri::command]
+async fn chatgpt_models(state: S<'_>) -> R<Vec<Value>> {
+    chatgpt::models(&state).await.map_err(e)
+}
+
+#[tauri::command]
+fn chatgpt_set_model(state: S, model: String) -> R<()> {
+    chatgpt::set_model(&state, &model).map_err(e)
 }
 
 #[tauri::command]
@@ -671,7 +697,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
+            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
             create_task, list_tasks, get_task, cancel_task, resume_task, delete_task,
             update_clip, ai_edit, split_clip, merge_clips, delete_clip, clip_words, render_candidate, get_kit, make_kit, save_kit,
             save_clip, export_clip, export_zip, suggested_name,

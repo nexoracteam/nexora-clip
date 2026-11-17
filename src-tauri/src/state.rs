@@ -25,7 +25,7 @@ pub struct AppState {
 pub type State = Arc<AppState>;
 
 /// Stored encrypted (Windows DPAPI).
-const SECRET_KEYS: [&str; 2] = ["settings", "publish_vault"];
+const SECRET_KEYS: [&str; 3] = ["settings", "publish_vault", "chatgpt_auth"];
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339()

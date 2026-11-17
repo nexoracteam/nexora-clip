@@ -28,6 +28,8 @@ pub fn config_error(settings: &Settings, model_name: &str) -> Option<String> {
         "openrouter" => missing(&settings.openrouter_api_key, "OpenRouter"),
         "groq" => missing(&settings.groq_api_key, "Groq"),
         "ollama" => None,
+        // The sign-in lives in its own store; a missing sign-in is reported when the call is made.
+        "chatgpt" => None,
         "custom" => settings.custom_base_url.trim().is_empty().then(|| "Set the custom OpenAI-compatible base URL in Settings.".to_string()),
         other => Some(format!("Unsupported AI provider \"{other}\". Use google-gla, openai, anthropic, openrouter, groq, ollama or custom.")),
     }
@@ -55,6 +57,9 @@ async fn call_once(state: &State, settings: &Settings, model_name: &str, system:
     let (provider, model) = split_model(model_name);
     let fail = |transient: bool, message: String| Failure { transient, message };
     let net = |e: reqwest::Error| Failure { transient: true, message: format!("Network error talking to {provider}: {e}") };
+    if provider == "chatgpt" {
+        return crate::chatgpt::generate(state, &model, system, user, timeout).await.map_err(|(transient, message)| fail(transient, message));
+    }
     let (req, kind) = match provider.as_str() {
         "google" | "google-gla" => (
             state.http.post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"))
@@ -137,6 +142,7 @@ fn pretty(model_name: &str) -> String {
         "ollama" => "Ollama (this PC)",
         "groq" => "Groq",
         "openai" => "OpenAI",
+        "chatgpt" => "ChatGPT",
         "anthropic" => "Claude",
         other => other,
     };
@@ -182,6 +188,13 @@ async fn candidates(state: &State, settings: &Settings, model_name: &str) -> Vec
     }
     if !settings.openrouter_api_key.trim().is_empty() {
         v.extend(FREE_OPENROUTER.iter().map(|m| format!("openrouter:{m}")));
+    }
+    // A connected ChatGPT plan is a good backup: it is the user's own and needs no key.
+    if crate::chatgpt::connected(state) {
+        let m = crate::chatgpt::chosen_model(state);
+        if !m.is_empty() {
+            v.push(format!("chatgpt:{m}"));
+        }
     }
     for m in ollama_models(state, settings).await.into_iter().take(2) {
         v.push(format!("ollama:{m}"));
@@ -293,6 +306,9 @@ pub async fn test_model(state: &State, settings: &Settings, model_name: &str) ->
                 bail!("[ai_quota] {} has used up its free allowance. {}", pretty(model_name), crate::quota::retry_seconds(&e).map(|s| format!("It resets in about {}.", human_wait(s))).unwrap_or_else(|| "It resets daily.".into()));
             }
             let l = e.to_lowercase();
+            if split_model(model_name).0 == "chatgpt" && (l.contains("401") || l.contains("sign in") || l.contains("403")) {
+                bail!("[ai_key] ChatGPT is not signed in, or this account cannot share its plan. Connect it again in Settings.");
+            }
             if l.contains("api key") || l.contains("401") || l.contains("403") || l.contains("unauthorized") || l.contains("permission") {
                 bail!("[ai_key] {} did not accept the key. Check the key in Settings.", pretty(model_name));
             }

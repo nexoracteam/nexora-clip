@@ -140,6 +140,11 @@ fn pct(s: &str) -> String {
 
 /// Wait for one browser redirect on 127.0.0.1 and return its query parameters.
 async fn wait_callback(listener: TcpListener, state_nonce: &str, brand: &str) -> Result<std::collections::HashMap<String, String>> {
+    wait_callback_at(listener, state_nonce, brand, "/callback").await
+}
+
+/// Same, for a provider that fixes a different callback path (for example `/auth/callback`).
+pub(crate) async fn wait_callback_at(listener: TcpListener, state_nonce: &str, brand: &str, expected_path: &str) -> Result<std::collections::HashMap<String, String>> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
     loop {
         let (mut sock, _) = tokio::time::timeout_at(deadline, listener.accept()).await.map_err(|_| anyhow!("Sign-in timed out. Press Connect again."))??;
@@ -170,7 +175,8 @@ async fn wait_callback(listener: TcpListener, state_nonce: &str, brand: &str) ->
                 }
             }
         }
-        let valid = path.starts_with("/callback") && query.get("state").map(|s| s == state_nonce).unwrap_or(false);
+        let path_only = path.split('?').next().unwrap_or("");
+        let valid = path_only == expected_path && query.get("state").map(|s| s == state_nonce).unwrap_or(false);
         let body = if valid { format!("<html><body style='font-family:sans-serif;padding:40px'><h2>{brand} connected</h2><p>You can close this tab and return to Nexora Clip.</p></body></html>") } else { "Invalid sign-in response.".to_string() };
         let _ = sock.write_all(format!("HTTP/1.1 {} OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", if valid { 200 } else { 400 }, body.len(), body).as_bytes()).await;
         if valid {

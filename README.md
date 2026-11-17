@@ -6,6 +6,7 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 [![Latest release](https://img.shields.io/github/v/release/nexoracteam/nexora-clip?style=flat-square)](https://github.com/nexoracteam/nexora-clip/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue?style=flat-square)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 
 **[Download the installer](https://github.com/nexoracteam/nexora-clip/releases/latest)** · [Features](#features) · [Layouts](#layouts) · [Publishing](#publishing) · [Privacy](#what-leaves-your-pc) · [Build](#build-from-source)
 
@@ -31,6 +32,8 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 **Transcription.** The video's own subtitles when it has good ones (fast and free), otherwise local whisper.cpp (offline), AssemblyAI, Groq Whisper or OpenAI Whisper.
 
 **Picking moments.** Free ways first: Gemini (free tier), Groq, OpenRouter's free models and Ollama on your PC. If one is busy or out of quota, the next free one answers by itself, and with no AI at all clips are still made, picked by sound and speech. Paid providers (OpenAI, Claude) keep working if you already use them. Long videos are read in overlapping 12-minute windows, then ranked together. Workflows: highlights, series (Part 1..N), topic, recap and trailer, plus free-text instructions. Every clip gets a score for hook, engagement, value and shareability.
+
+**Your own ChatGPT plan.** With ChatGPT Plus or Pro you can press *Continue with ChatGPT* in Settings and the AI uses your plan instead of an API key. This is OpenAI's official "Sign in with ChatGPT" flow for open-source apps: you sign in at OpenAI in your browser, Nexora Clip never sees your password, and you can disconnect at any time. Plan usage limits apply; when they run out the free models answer instead. It is optional and needs no key.
 
 **Game knowledge.** For GTA VI videos the AI knows the characters, places and release facts, speech recognition is told the names (Lucia, Leonida, Vice City…), and captions get their spelling and capitals right. Add your own notes from Settings. Hindi and Urdu captions can be shown in Roman letters.
 
@@ -67,7 +70,7 @@ The Publishing page has a step-by-step guide for each platform, listing exactly 
 
 ## What leaves your PC
 
-Everything is cut and rendered locally. Text goes to the AI provider you choose (the transcript, to pick moments). If you switch on **Let Gemini look at the picture**, a few frames, or a small copy of videos with little speech, go to Google with your key; you can turn that off in Settings. Clips leave only when you publish them.
+Everything is cut and rendered locally. Text goes to the AI provider you choose (the transcript, to pick moments). If you connect ChatGPT, the sign-in tokens are stored encrypted on this PC and the text goes to OpenAI under your own account. If you switch on **Let Gemini look at the picture**, a few frames, or a small copy of videos with little speech, go to Google with your key; you can turn that off in Settings. Clips leave only when you publish them.
 
 ## Install
 
@@ -86,7 +89,7 @@ Requires Rust (MSVC toolchain) and Node.js.
 ```bash
 npm install
 npx tauri build      # installer in src-tauri/target/release/bundle/nsis/
-cargo test           # in src-tauri: 61 unit tests
+cargo test           # in src-tauri: 68 unit tests
 ```
 
 For development: `npx tauri dev`.
@@ -97,6 +100,7 @@ For development: `npx tauri dev`.
 |---|---|
 | `src-tauri/src/pipeline.rs` | Task pipeline: download, transcribe, analyse, render |
 | `src-tauri/src/ai.rs`, `llm.rs`, `gemini.rs`, `vision.rs` | Moment selection, workflows, model providers, picture-based features |
+| `src-tauri/src/chatgpt.rs` | Sign in with ChatGPT: OAuth with PKCE, token refresh, streamed answers |
 | `src-tauri/src/transcribe.rs`, `subs.rs` | Transcription and the video's own subtitles |
 | `src-tauri/src/render.rs`, `face.rs`, `captions.rs` | ffmpeg render, face framing, captions |
 | `src-tauri/src/editor.rs`, `kit.rs` | Trim, split, merge, exports, publish kit |
@@ -104,3 +108,7 @@ For development: `npx tauri dev`.
 | `src-tauri/src/tools.rs`, `download.rs` | Tool installer, yt-dlp |
 | `src-tauri/src/state.rs`, `secret.rs` | SQLite store, DPAPI encryption |
 | `ui/` | The interface (plain HTML, CSS and JavaScript) |
+
+## License
+
+Nexora Clip is free software under the [GNU Affero General Public License v3.0](LICENSE). You may use, study, change and share it, and changes you share must stay under the same licence.

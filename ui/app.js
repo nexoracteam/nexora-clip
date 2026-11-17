@@ -41,6 +41,7 @@ const PROVIDERS = [
   ["ollama", "Ollama (on this PC, free)", "", null],
   ["custom", "Local server (OpenAI-compatible)", "", "custom_api_key"],
 ];
+const CHATGPT = ["chatgpt", "ChatGPT (your plan)", "", null];
 const PAID_PROVIDERS = [
   ["openai", "OpenAI (paid)", "gpt-5-mini", "openai_api_key"],
   ["anthropic", "Anthropic Claude (paid)", "claude-sonnet-5-5", "anthropic_api_key"],
@@ -166,7 +167,7 @@ async function render() {
     return;
   }
   if (view === "settings") {
-    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); } else v.innerHTML = skeletonPage("Settings");
+    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); loadChatgpt(false); } else v.innerHTML = skeletonPage("Settings");
     const before = JSON.stringify([S.tools, S.groq]);
     await refreshTools();
     try { S.groq = await invoke("groq_status"); } catch (e) {}
@@ -662,6 +663,31 @@ async function loadAiUsage() {
   const anyRest = (u.models || []).some((r) => r.resting);
   box.innerHTML = rows ? `<div class="chips" style="align-items:center"><span>Used today:</span>${rows}${anyRest ? `<button class="btn sm" data-act="wake-models">Try resting models again</button>` : ""}</div>` : "No AI requests yet today.";
 }
+function chatgptCard() {
+  const g = S.chatgpt || { connected: false };
+  const head = `<div class="row" style="justify-content:space-between"><h2 style="margin:0">Use your ChatGPT plan</h2>${g.connected ? `<span class="chip">Connected${g.email ? " · " + esc(g.email) : ""}</span>` : ""}</div>`;
+  const note = g.message && !g.connected ? `<p class="small">${esc(g.message)}</p>` : "";
+  if (!g.connected) {
+    return `${head}<p class="muted small">Sign in with your own ChatGPT account and the AI uses your plan instead of an API key. Needs ChatGPT Plus or Pro. Your browser opens at OpenAI; Nexora Clip never sees your password. Plan limits apply, and when they run out the free models take over.</p>${note}
+      <div class="row"><button class="btn primary" data-act="chatgpt-login" id="gpt-login">Continue with ChatGPT</button></div>`;
+  }
+  const have = (S.chatgptModels || []).map((m) => [m.slug, m.name]);
+  const cur = g.model || (have[0] && have[0][0]) || "";
+  const opts = have.some((m) => m[0] === cur) || !cur ? have : [[cur, cur], ...have];
+  const using = S.settings && S.settings.llm.startsWith("chatgpt:");
+  return `${head}<p class="muted small">${using ? "ChatGPT answers first. If your plan runs out, the free models take over." : "ChatGPT is a backup now: it answers when the free models are busy."}</p>
+    <div class="grid-3"><label class="field">Model<select id="gpt-model">${opts.length ? opts.map((m) => `<option value="${esc(m[0])}" ${m[0] === cur ? "selected" : ""}>${esc(m[1])}</option>`).join("") : '<option value="">Loading…</option>'}</select></label>
+      <div class="row" style="align-items:flex-end"><button class="btn primary" data-act="chatgpt-use">${using ? "Save model" : "Use ChatGPT first"}</button></div>
+      <div class="row" style="align-items:flex-end"><button class="btn" data-act="chatgpt-disconnect">Disconnect</button></div></div>`;
+}
+async function loadChatgpt(withModels) {
+  try { S.chatgpt = await invoke("chatgpt_status"); } catch (e) { return; }
+  if (S.chatgpt.connected && (withModels || !S.chatgptModels)) {
+    try { S.chatgptModels = await invoke("chatgpt_models"); } catch (e) { S.chatgptModels = []; }
+  }
+  const box = $("#chatgpt-card");
+  if (box && S.view === "settings" && !typingInView()) renderSettings();
+}
 async function loadOutroPreview() {
   try {
     const path = await invoke("outro_preview");
@@ -673,11 +699,19 @@ async function loadOutroPreview() {
 function renderSettings() {
   const s = S.settings, [prov, ...rest] = s.llm.split(":"), model = rest.join(":");
   const paid = PAID_PROVIDERS.find((p) => p[0] === prov);
-  const providerList = paid ? [...PROVIDERS, paid] : PROVIDERS;
+  const showGpt = prov === "chatgpt" || (S.chatgpt && S.chatgpt.connected);
+  const providerList = [...PROVIDERS, ...(paid ? [paid] : []), ...(showGpt ? [CHATGPT] : [])];
   const P = providerList.find((p) => p[0] === prov) || PROVIDERS[0];
   const listed = FREE_MODELS[P[0]];
   let modelField;
-  if (listed) {
+  if (P[0] === "chatgpt") {
+    const have = (S.chatgptModels || []).map((m) => [m.slug, m.name]);
+    const cur = model || (S.chatgpt && S.chatgpt.model) || "";
+    const opts = have.some((m) => m[0] === cur) || !cur ? have : [[cur, cur + " (current)"], ...have];
+    modelField = opts.length
+      ? `<select id="s-model">${opts.map((m) => `<option value="${esc(m[0])}" ${m[0] === cur ? "selected" : ""}>${esc(m[1])}</option>`).join("")}</select>`
+      : `<input type="text" id="s-model" value="${esc(cur)}" placeholder="Loading your models…" />`;
+  } else if (listed) {
     const opts = listed.some((m) => m[0] === model) || !model ? listed : [[model, model + " (current)"], ...listed];
     modelField = `<select id="s-model">${opts.map((m) => `<option value="${esc(m[0])}" ${m[0] === (model || P[2]) ? "selected" : ""}>${esc(m[1])}</option>`).join("")}</select>`;
   } else if (P[0] === "ollama") {
@@ -698,13 +732,14 @@ function renderSettings() {
       <p class="muted small">Only free ways to use AI are listed. If one is busy or out of free quota, the next free one answers by itself, so a clip run does not stop.</p>
       <div class="grid-3"><label class="field">Provider<select id="s-prov">${providerList.map((p) => `<option value="${p[0]}" ${p[0] === P[0] ? "selected" : ""}>${p[1]}</option>`).join("")}</select></label>
         <label class="field">Model${modelField}</label>
-        ${P[3] ? key(P[3], P[1].replace(/ \(.*\)/, "") + " API key") : `<label class="field">Ollama address<input type="text" data-set="ollama_base_url" value="${esc(s.ollama_base_url)}" /></label>`}</div>
+        ${P[0] === "chatgpt" ? `<label class="field">Account<input type="text" disabled value="${esc((S.chatgpt && S.chatgpt.email) || "Connected")}" /></label>` : P[3] ? key(P[3], P[1].replace(/ \(.*\)/, "") + " API key") : `<label class="field">Ollama address<input type="text" data-set="ollama_base_url" value="${esc(s.ollama_base_url)}" /></label>`}</div>
       ${P[0] === "custom" ? `<label class="field">Base URL (…/v1)<input type="text" data-set="custom_base_url" value="${esc(s.custom_base_url)}" placeholder="http://localhost:1234/v1" /></label>` : ""}
       <div class="grid-3"><label class="field">Rerank model for long videos (optional, provider:model)<input type="text" data-set="rerank_llm" value="${esc(s.rerank_llm)}" placeholder="same as above" /></label>
         <label class="field">Most clips per video<input type="number" data-set="max_clips" data-num min="1" max="20" value="${s.max_clips}" /></label>
         <div class="row" style="align-items:flex-end"><button class="btn" id="test-llm-btn" data-act="test-llm">Save & test AI connection</button></div></div>
       <div id="ai-test"></div>
       <div id="ai-usage" class="muted small"></div></div>
+    <div class="card stack" id="chatgpt-card">${chatgptCard()}</div>
     ${groqCard()}
     <div class="card stack"><h2>Game knowledge and captions</h2>
       <p class="muted small">For GTA VI videos the AI knows the characters, places and release facts, speech recognition is told their names, and captions get their spelling right. Hindi and Urdu captions can be shown in Roman letters ("yaar kya hai").</p>
@@ -749,7 +784,7 @@ function readSettings() {
     s[k] = el.type === "checkbox" ? el.checked : "num" in el.dataset ? Number(el.value) : el.value.trim();
   });
   const prov = $("#s-prov"), model = $("#s-model");
-  if (prov) { const P = [...PROVIDERS, ...PAID_PROVIDERS].find((p) => p[0] === prov.value); s.llm = `${prov.value}:${(model && model.value.trim()) || P[2]}`; }
+  if (prov) { const P = [...PROVIDERS, ...PAID_PROVIDERS, CHATGPT].find((p) => p[0] === prov.value); s.llm = `${prov.value}:${(model && model.value.trim()) || P[2]}`; }
 }
 async function saveSettings(quiet) {
   readSettings();
@@ -892,6 +927,24 @@ document.addEventListener("click", async (ev) => {
       catch (err) { box.innerHTML = errorCard(errInfo(err)); }
       el.disabled = false; el.textContent = label; loadAiUsage(); return;
     }
+    case "chatgpt-login": {
+      el.disabled = true; el.innerHTML = '<span class="btn-spin"></span>Waiting for your browser…';
+      try { await invoke("chatgpt_login"); } catch (err) { toastError(err); el.disabled = false; el.textContent = "Continue with ChatGPT"; }
+      return;
+    }
+    case "chatgpt-disconnect": {
+      if (!(await askConfirm({ title: "Disconnect ChatGPT?", text: "Nexora Clip forgets the sign-in and asks OpenAI to revoke it. You can connect again any time.", label: "Disconnect" }))) return;
+      try { await invoke("chatgpt_disconnect"); } catch (err) { return toastError(err); }
+      S.chatgptModels = null;
+      if (S.settings.llm.startsWith("chatgpt:")) { S.settings.llm = "google-gla:gemini-3.1-flash-lite"; await call("save_settings", { settings: S.settings }); }
+      toast("ChatGPT disconnected"); return loadChatgpt(false);
+    }
+    case "chatgpt-use": {
+      const slug = ($("#gpt-model") || {}).value; if (!slug) return toast("Pick a model first", true);
+      try { await invoke("chatgpt_set_model", { model: slug }); S.settings.llm = `chatgpt:${slug}`; await call("save_settings", { settings: S.settings }); }
+      catch (err) { return toastError(err); }
+      toast("ChatGPT will answer first"); return loadChatgpt(false);
+    }
     case "err-settings": return go("settings");
     case "recheck-updates": return loadUpdates(true);
     case "wake-models": await invoke("ai_reset_rest"); toast("All models will be tried again"); return loadAiUsage();
@@ -954,7 +1007,7 @@ document.addEventListener("change", async (ev) => {
   if (el.id === "f-section") { o.section_start = el.checked ? 0 : null; o.section_end = el.checked ? Math.floor(S.probe?.data?.duration || 60) : null; refreshProbe(); }
   if (el.id === "fb-page") { await call("facebook_select", { id: el.value }); toast("Page selected"); }
   if (el.dataset.plat) { el.checked ? S.publishClip.platforms.add(el.dataset.plat) : S.publishClip.platforms.delete(el.dataset.plat); renderPublishModal(); }
-  if (el.id === "s-prov") { readSettings(); const P = [...PROVIDERS, ...PAID_PROVIDERS].find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[0] === "ollama" ? (S.ollama && S.ollama[0]) || "" : P[2]}`; renderSettings(); loadAiUsage(); }
+  if (el.id === "s-prov") { readSettings(); const P = [...PROVIDERS, ...PAID_PROVIDERS, CHATGPT].find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[0] === "ollama" ? (S.ollama && S.ollama[0]) || "" : P[0] === "chatgpt" ? (S.chatgpt && S.chatgpt.model) || (S.chatgptModels && S.chatgptModels[0] && S.chatgptModels[0].slug) || "" : P[2]}`; renderSettings(); loadAiUsage(); }
   if ("rerender" in el.dataset) { readSettings(); await saveSettings(true); renderSettings(); }
   if (el.dataset.pick) { el.checked ? S.selected.add(el.dataset.pick) : S.selected.delete(el.dataset.pick); el.closest(".clip").classList.toggle("sel", el.checked); refreshHead(); }
   if (el.dataset.export && el.value) {
@@ -998,6 +1051,11 @@ T.event.listen("publish-update", ({ payload: r }) => {
 T.event.listen("publish-auth", async ({ payload: p }) => {
   toast(p.message, !/connected/i.test(p.message) && !/Waiting/i.test(p.message));
   if (S.view === "publish") { await loadPublish(); renderPublish(); }
+});
+T.event.listen("chatgpt-auth", async ({ payload: p }) => {
+  toast(p.message, !p.connected && !/Waiting/i.test(p.message) && !!p.message);
+  S.chatgptModels = null;
+  if (S.view === "settings") await loadChatgpt(true);
 });
 T.event.listen("clip-update", ({ payload: c }) => upsertClip(c));
 T.event.listen("clip-progress", ({ payload: p }) => { const el = $(`[data-clip-pct="${p.id}"]`); if (el) el.textContent = `Rendering ${p.progress}%`; });
