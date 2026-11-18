@@ -259,3 +259,22 @@ main.enter .page { animation: pageIn .28s cubic-bezier(.2,.7,.2,1) both; }
 .confirm-body p { margin: 0; font-size: 14px; line-height: 1.5; }
 .btn.danger-fill { background: var(--destructive); border-color: var(--destructive); color: #fff; }
 .btn.danger-fill:hover { opacity: .9; background: var(--destructive); }
+
+/* ---------- phone layout (the interface opened from a phone through Remote access) ---------- */
+@media (max-width: 760px) {
+  html, body { height: 100dvh; }
+  body { flex-direction: column-reverse; }
+  .sidebar { width: auto; flex-direction: row; align-items: center; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--border); }
+  .sidebar .brand, .sidebar-foot, .new-btn .kbd { display: none; }
+  .sidebar nav { display: flex; flex-direction: row; flex: 1; justify-content: space-around; gap: 4px; }
+  .nav-item { flex-direction: column; gap: 2px; padding: 6px 12px; font-size: 11px; }
+  .new-btn { margin: 0; padding: 10px 12px; font-size: 0; gap: 0; }
+  main { flex: 1; min-height: 0; padding: 16px 14px 24px; }
+  .page-head { flex-wrap: wrap; }
+  .grid-2, .grid-3, .modal-body { grid-template-columns: 1fr; }
+  .modal-back { padding: 0; }
+  .modal { border-radius: 0; height: 100%; }
+  .clips { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+  .task-row { flex-wrap: wrap; }
+  #toasts { left: 12px; right: 12px; bottom: 84px; }
+}

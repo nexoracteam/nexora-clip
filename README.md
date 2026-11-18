@@ -53,7 +53,9 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 **Export.** Save a clip, export with a TikTok, Reels or Shorts preset, or download everything as a ZIP.
 
-**Reliability.** Keys and tokens are encrypted with Windows DPAPI. Problems (missing tools or keys, low disk space) are caught before a long job starts. A crashed job is marked failed and can be resumed. One window at a time, the window size is remembered, and there is a log file under Settings.
+**Use it from your phone.** Turn on *Remote access* in Settings and the app runs a small web page on this PC. Scan the QR code with your phone to pair it, then see your library, start a video (paste a link or upload one), watch the clips and download them. All the work stays on this PC, so keep it on (the tray and keep-awake options help). Reach the PC from anywhere through [Tailscale](https://tailscale.com) (free, encrypted, nothing opened to the internet), or only at home over Wi-Fi. Keys, account sign-ins and publishing stay on the PC and are not available from the phone.
+
+**Reliability.** Keys and tokens are encrypted with Windows DPAPI. Problems (missing tools or keys, low disk space) are caught before a long job starts. A crashed job is marked failed and can be resumed. One window at a time, the window size is remembered, and there is a log file under Settings. Closing the window keeps the app running in the system tray (Quit from the tray icon), it can start with Windows, and it can keep the PC awake while it runs in the background. All three are switches in Settings.
 
 ## Layouts
 
@@ -97,7 +99,7 @@ Requires Rust (MSVC toolchain) and Node.js.
 ```bash
 npm install
 npx tauri build      # installer in src-tauri/target/release/bundle/nsis/
-cargo test           # in src-tauri: 68 unit tests
+cargo test           # in src-tauri: 72 unit tests
 ```
 
 For development: `npx tauri dev`.

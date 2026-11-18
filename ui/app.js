@@ -167,7 +167,7 @@ async function render() {
     return;
   }
   if (view === "settings") {
-    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); loadChatgpt(false); } else v.innerHTML = skeletonPage("Settings");
+    if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); loadChatgpt(false); loadRemote(); } else v.innerHTML = skeletonPage("Settings");
     const before = JSON.stringify([S.tools, S.groq]);
     await refreshTools();
     try { S.groq = await invoke("groq_status"); } catch (e) {}
@@ -688,6 +688,30 @@ async function loadChatgpt(withModels) {
   const box = $("#chatgpt-card");
   if (box && S.view === "settings" && !typingInView()) renderSettings();
 }
+async function loadRemote() {
+  const box = $("#remote-body"); if (!box || T.remote) return;
+  let r; try { r = await invoke("remote_status"); } catch (e) { return; }
+  S.remote = r;
+  const put = (h) => { S.remoteHtml = h; box.innerHTML = h; };
+  if (!r.enabled) {
+    put(`<p class="muted small">Open this PC's Nexora Clip from your phone: see your library, start a video, watch and download clips. The work stays on this PC, so keep it on. Nothing is open to the internet; you reach it through Tailscale (free) or your home Wi-Fi.</p>
+      <div class="row"><button class="btn primary" data-act="remote-on">Turn on remote access</button></div>`);
+    return;
+  }
+  const state = r.error ? `<span class="chip" style="color:var(--destructive)">${esc(r.error)}</span>` : r.running ? `<span class="chip ok">Running</span>` : `<span class="chip">Starting…</span>`;
+  const ts = r.tailscale_url
+    ? `<div class="row"><span class="chip">${esc(r.tailscale_url)}</span><button class="btn sm" data-act="remote-forget-ts">Forget</button></div>`
+    : `<p class="muted small">1. Install <b>Tailscale</b> on this PC and on your phone (tailscale.com/download) and sign in to the same account on both. 2. In the Tailscale admin page turn on <b>HTTPS certificates</b>. 3. Press the button.</p><div class="row"><button class="btn primary" data-act="remote-ts" id="remote-ts-btn">Set up Tailscale link</button></div><div id="remote-ts-msg" class="small">${S.remoteMsg ? `<div class="errcard"><div class="grow"><p class="err-text">${esc(S.remoteMsg)}</p></div></div>` : ""}</div>`;
+  const where = r.tailscale_url ? "from anywhere" : r.lan_url ? "on your home Wi-Fi" : "only on this PC until you set up Tailscale or allow Wi-Fi";
+  put(`<div class="row" style="justify-content:space-between"><div>${state}</div><button class="btn sm" data-act="remote-off">Turn off</button></div>
+    <h2 style="margin-top:4px">1. Reach this PC</h2>${ts}
+    <label class="check"><input type="checkbox" data-set="remote_lan" data-rerender ${r.lan ? "checked" : ""} />Also allow my home Wi-Fi without Tailscale (not encrypted, use only at home)</label>
+    <h2 style="margin-top:4px">2. Pair your phone</h2>
+    <p class="muted small">Scan this with your phone camera. It opens Nexora Clip ${where}. Anyone with this link can use your app, so do not share it.</p>
+    <div class="row" style="align-items:flex-start;gap:18px;flex-wrap:wrap">
+      <div style="width:200px;height:200px;background:#fff;border-radius:12px;padding:6px;flex:none">${(r.qr_svg || "").replace("<svg ", '<svg style="width:100%;height:100%" ')}</div>
+      <div class="stack" style="flex:1;min-width:200px"><button class="btn" data-act="remote-copy">Copy pairing link</button><button class="btn" data-act="remote-reset">Reset pairing (signs out all phones)</button></div></div>`);
+}
 async function loadOutroPreview() {
   try {
     const path = await invoke("outro_preview");
@@ -746,6 +770,13 @@ function renderSettings() {
       <div class="grid-3"><label class="field">Game knowledge<select data-set="knowledge_profile">${[["auto", "Notice it from the video (recommended)"], ["gta6", "GTA VI, always"], ["off", "Off"]].map((o) => `<option value="${o[0]}" ${s.knowledge_profile === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}</select></label>
         <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" data-set="roman_captions" ${s.roman_captions ? "checked" : ""} />Hindi / Urdu captions in Roman letters</label>
         <div class="row" style="align-items:flex-end"><button class="btn" data-act="open-knowledge">Open my GTA notes</button></div></div></div>
+    <div class="card stack"><h2>Run in the background</h2>
+      <p class="muted small">Keep Nexora Clip alive in the system tray so renders keep going when you close the window, and so it is ready when you reach this PC from elsewhere.</p>
+      <label class="check"><input type="checkbox" data-set="run_in_background" ${s.run_in_background ? "checked" : ""} />Closing the window keeps the app running in the tray</label>
+      <label class="check"><input type="checkbox" data-set="keep_awake" ${s.keep_awake ? "checked" : ""} />Keep this PC awake while the app runs in the background</label>
+      <label class="check"><input type="checkbox" data-set="autostart" ${s.autostart ? "checked" : ""} />Start with Windows (hidden in the tray)</label>
+      <p class="muted small">Quit for real from the tray icon: right-click it, then Quit.</p></div>
+    ${T.remote ? "" : `<div class="card stack" id="remote-card"><h2>Remote access (use it from your phone)</h2><div id="remote-body" class="stack">${S.remoteHtml || ""}</div></div>`}
     <div class="card stack"><h2>Transcription</h2>
       <div class="grid-3"><label class="field">Provider<select data-set="transcription_provider" data-rerender>
           ${[["whisper_local", "Whisper on this PC (free, offline)"], ["assemblyai", "AssemblyAI (best accuracy, speakers)"], ["groq", "Groq Whisper (fast, cloud)"], ["openai", "OpenAI Whisper"]].map((o) => `<option value="${o[0]}" ${s.transcription_provider === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}</select></label>
@@ -945,6 +976,18 @@ document.addEventListener("click", async (ev) => {
       catch (err) { return toastError(err); }
       toast("ChatGPT will answer first"); return loadChatgpt(false);
     }
+    case "remote-on": S.settings.remote_enabled = true; await saveSettings(true); return loadRemote();
+    case "remote-off": S.settings.remote_enabled = false; await saveSettings(true); return loadRemote();
+    case "remote-ts": {
+      el.disabled = true; el.innerHTML = '<span class="btn-spin"></span>Setting up…';
+      S.remoteMsg = "";
+      try { await invoke("remote_tailscale_setup"); toast("Tailscale link ready"); }
+      catch (err) { S.remoteMsg = String(err); }
+      return loadRemote();
+    }
+    case "remote-forget-ts": await invoke("remote_forget_tailscale"); return loadRemote();
+    case "remote-reset": if (await askConfirm({ title: "Reset pairing?", text: "Every paired phone is signed out. Pair them again with the new QR code.", label: "Reset" })) { await invoke("remote_reset_pairing"); toast("Pairing reset"); loadRemote(); } return;
+    case "remote-copy": try { await navigator.clipboard.writeText((S.remote && S.remote.pair_url) || ""); toast("Pairing link copied"); } catch (e) { toast("Could not copy", true); } return;
     case "err-settings": return go("settings");
     case "recheck-updates": return loadUpdates(true);
     case "wake-models": await invoke("ai_reset_rest"); toast("All models will be tried again"); return loadAiUsage();
@@ -1008,7 +1051,7 @@ document.addEventListener("change", async (ev) => {
   if (el.id === "fb-page") { await call("facebook_select", { id: el.value }); toast("Page selected"); }
   if (el.dataset.plat) { el.checked ? S.publishClip.platforms.add(el.dataset.plat) : S.publishClip.platforms.delete(el.dataset.plat); renderPublishModal(); }
   if (el.id === "s-prov") { readSettings(); const P = [...PROVIDERS, ...PAID_PROVIDERS, CHATGPT].find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[0] === "ollama" ? (S.ollama && S.ollama[0]) || "" : P[0] === "chatgpt" ? (S.chatgpt && S.chatgpt.model) || (S.chatgptModels && S.chatgptModels[0] && S.chatgptModels[0].slug) || "" : P[2]}`; renderSettings(); loadAiUsage(); }
-  if ("rerender" in el.dataset) { readSettings(); await saveSettings(true); renderSettings(); }
+  if ("rerender" in el.dataset) { readSettings(); await saveSettings(true); renderSettings(); loadRemote(); }
   if (el.dataset.pick) { el.checked ? S.selected.add(el.dataset.pick) : S.selected.delete(el.dataset.pick); el.closest(".clip").classList.toggle("sel", el.checked); refreshHead(); }
   if (el.dataset.export && el.value) {
     const preset = el.value, id = el.dataset.export; el.value = "";

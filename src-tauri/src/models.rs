@@ -49,6 +49,17 @@ pub struct Settings {
     pub knowledge_profile: String,
     /// Show Hindi and Urdu captions in Roman letters.
     pub roman_captions: bool,
+    /// Closing the window keeps the app running in the tray.
+    pub run_in_background: bool,
+    /// Start with Windows (hidden in the tray).
+    pub autostart: bool,
+    /// Stop this PC from sleeping while the app runs in the background.
+    pub keep_awake: bool,
+    /// Let a phone use this PC's app through the built-in web server.
+    pub remote_enabled: bool,
+    /// Also listen on the home Wi-Fi (plain HTTP). Off: only this PC and Tailscale.
+    pub remote_lan: bool,
+    pub remote_port: u16,
     /// Words for the speech-to-text to expect (set per task, never saved).
     #[serde(skip)]
     pub vocab: Vec<String>,
@@ -94,6 +105,12 @@ impl Default for Settings {
             gemini_vision: true,
             knowledge_profile: "auto".into(),
             roman_captions: true,
+            run_in_background: true,
+            autostart: false,
+            keep_awake: true,
+            remote_enabled: false,
+            remote_lan: false,
+            remote_port: 8765,
             vocab: Vec::new(),
         }
     }

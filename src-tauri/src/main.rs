@@ -6,6 +6,7 @@ mod secret;
 mod gemini;
 mod vision;
 mod quota;
+mod remote;
 mod knowledge;
 mod roman;
 mod subs;
@@ -27,6 +28,7 @@ mod render;
 mod state;
 mod tools;
 mod transcribe;
+mod tray;
 mod visual;
 
 use models::*;
@@ -52,9 +54,37 @@ fn get_settings(state: S) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: S, settings: Settings) -> R<()> {
+fn save_settings(state: S, app: AppHandle, settings: Settings) -> R<()> {
     *state.encoder_cache.lock().unwrap() = None;
-    state.save_settings(&settings).map_err(e)
+    let before = state.settings();
+    state.save_settings(&settings).map_err(e)?;
+    tray::apply(&app, &settings);
+    if before.remote_enabled != settings.remote_enabled || before.remote_lan != settings.remote_lan || before.remote_port != settings.remote_port {
+        remote::reconfigure(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn remote_status(state: S) -> Value {
+    remote::status(&state)
+}
+
+#[tauri::command]
+fn remote_reset_pairing(state: S, app: AppHandle) -> R<()> {
+    remote::reset_token(&state).map_err(e)?;
+    remote::reconfigure(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn remote_tailscale_setup(state: S<'_>) -> R<String> {
+    remote::tailscale_setup(&state).await.map_err(e)
+}
+
+#[tauri::command]
+fn remote_forget_tailscale(state: S) {
+    remote::forget_tailscale(&state)
 }
 
 #[tauri::command]
@@ -677,8 +707,26 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                let Some(st) = window.app_handle().try_state::<state::State>() else { return };
+                if tray::hide_on_close(&st.settings()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if st.kv_get("tray_hint_shown").is_none() {
+                        let _ = st.kv_set("tray_hint_shown", "1");
+                        use tauri_plugin_notification::NotificationExt;
+                        let _ = window.app_handle().notification().builder().title("Nexora Clip is still running").body("It stays in the tray so clips keep rendering. Click the tray icon to open it, or choose Quit.").show();
+                    }
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -693,11 +741,21 @@ fn main() {
                 let _ = st.kv_set("publish_vault", &v);
             }
             seed_fonts(&res, &data);
+            let settings = st.settings();
             app.manage(Arc::new(st));
+            tray::setup(app.handle())?;
+            remote::reconfigure(app.handle());
+            tray::apply(app.handle(), &settings);
+            // Started by Windows: stay out of the way in the tray.
+            if settings.run_in_background && std::env::args().any(|a| a == "--minimized") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
+            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, remote_status, remote_reset_pairing, remote_tailscale_setup, remote_forget_tailscale, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
             create_task, list_tasks, get_task, cancel_task, resume_task, delete_task,
             update_clip, ai_edit, split_clip, merge_clips, delete_clip, clip_words, render_candidate, get_kit, make_kit, save_kit,
             save_clip, export_clip, export_zip, suggested_name,
