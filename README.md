@@ -8,7 +8,7 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue?style=flat-square)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 
-**[Download the installer](https://github.com/nexoracteam/nexora-clip/releases/latest)** · [Features](#features) · [Layouts](#layouts) · [Publishing](#publishing) · [Privacy](#what-leaves-your-pc) · [Build](#build-from-source)
+**[Website](https://nexoraclip.site)** · **[Download the installer](https://github.com/nexoracteam/nexora-clip/releases/latest)** · [Features](#features) · [Layouts](#layouts) · [Publishing](#publishing) · [Privacy](#what-leaves-your-pc) · [Build](#build-from-source)
 
 [![Watch the 21-second intro](docs/media/intro.jpg)](docs/media/intro.mp4)
 
