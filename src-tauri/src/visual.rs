@@ -207,7 +207,7 @@ pub async fn analyze(
             text: String::new(),
             reasoning: format!("Picked by scene changes and sound: {:.0}% cut density, {:.0}% loudness.", c.cut_rate * 100.0, c.loud * 100.0),
             relevance: c.score.clamp(0.3, 0.98),
-            virality: Virality { hook_score: part, engagement_score: part, value_score: part, shareability_score: part, total_score: base.clamp(0, 100), hook_type: "none".into(), virality_reasoning: "Scored from action and audio energy (no speech in this video).".into() },
+            virality: Virality { hook_score: part, engagement_score: part, value_score: part, shareability_score: part, total_score: base.clamp(0, 100), hook_type: "none".into(), virality_reasoning: "Scored from action and audio energy (no speech in this video).".into(), mood: String::new() },
             hook_title: Some(title),
             role: None,
             part_number: None,

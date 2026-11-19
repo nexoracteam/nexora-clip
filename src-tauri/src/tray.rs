@@ -31,6 +31,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
             "quit" => {
+                crate::live::stop_all();
                 QUITTING.store(true, Ordering::SeqCst);
                 app.exit(0);
             }

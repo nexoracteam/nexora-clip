@@ -152,6 +152,8 @@ pub struct Virality {
     pub total_score: i64,
     pub hook_type: String,
     pub virality_reasoning: String,
+    /// funny, hype, fail, shock or wholesome; empty when none applies.
+    pub mood: String,
 }
 
 impl Default for Virality {
@@ -164,6 +166,7 @@ impl Default for Virality {
             total_score: 60,
             hook_type: "none".into(),
             virality_reasoning: String::new(),
+            mood: String::new(),
         }
     }
 }

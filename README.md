@@ -39,6 +39,10 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 **Your own ChatGPT plan.** With ChatGPT Plus or Pro you can press *Continue with ChatGPT* in Settings and the AI uses your plan instead of an API key. This is OpenAI's official "Sign in with ChatGPT" flow for open-source apps: you sign in at OpenAI in your browser, Nexora Clip never sees your password, and you can disconnect at any time. Plan usage limits apply; when they run out the free models answer instead. It is optional and needs no key.
 
+**Live streams.** The Live tab watches a live stream (YouTube, Twitch or Kick), shows it as a live preview a few seconds behind (with a sound button), and keeps the last ten minutes on disk without re-encoding. It catches good moments by itself from three signals, each compared with how that stream has been behaving: the sound getting much louder, a burst of action on screen, and, on YouTube, the chat suddenly speeding up (chat runs behind the picture, so the clip reaches further back). Every moment says why it was caught and how strong it is, and you choose how many you want (more, normal, fewer). *Clip now* saves the last 25 seconds and the next 10 whenever you like, and *Make clip* sends a moment through the normal steps (captions, hook title, layout, mood). An option can also make clips by itself for the strongest moments. *Find live streams* lists what is live for a search such as "GTA 6 live". Up to three streams at once; it also works from the phone.
+
+**Mood tags.** Every clip the AI picks can carry a mood: funny, hype, fail, shock or wholesome. The task page has a filter for them.
+
 **Game knowledge.** For GTA VI videos the AI knows the characters, places and release facts, speech recognition is told the names (Lucia, Leonida, Vice City…), and captions get their spelling and capitals right. Add your own notes from Settings. Hindi and Urdu captions can be shown in Roman letters.
 
 **Videos with little speech.** With a Google key, Gemini watches a small 360p copy to choose moments, writes hooks from frames of the clip, and finds subtitles burned into the picture so they can be cropped off. Without it, moments are picked from scene changes and loudness.
@@ -101,7 +105,7 @@ Requires Rust (MSVC toolchain) and Node.js.
 cd tunnel && go build -ldflags "-s -w" -o nexora-tunnel.exe . && cp nexora-tunnel.exe ../src-tauri/resources/tunnel/ && cd ..
 npm install
 npx tauri build      # installer in src-tauri/target/release/bundle/nsis/
-cargo test           # in src-tauri: 74 unit tests
+cargo test           # in src-tauri: 85 unit tests
 ```
 
 For development: `npx tauri dev`.
@@ -118,7 +122,8 @@ For development: `npx tauri dev`.
 | `src-tauri/src/editor.rs`, `kit.rs` | Trim, split, merge, exports, publish kit |
 | `src-tauri/src/publish.rs` | YouTube, Facebook and TikTok publishing |
 | `src-tauri/src/tools.rs`, `download.rs` | Tool installer, yt-dlp |
-| `src-tauri/src/remote.rs`, `tunnel.rs`, `tray.rs` | Phone access (web server, pairing), the Tailscale helper, tray and start with Windows |
+| `src-tauri/src/live.rs` | Live tab: stream buffer, Clip now, loud-moment detection |
+| `src-tauri/src/remote.rs`, `tunnel.rs`, `tray.rs`, `job.rs` | Phone access (web server, pairing), the Tailscale helper, tray and start with Windows |
 | `tunnel/` | The Go helper that joins Tailscale (`tsnet`) and opens Funnel |
 | `src-tauri/src/state.rs`, `secret.rs` | SQLite store, DPAPI encryption |
 | `ui/` | The interface (plain HTML, CSS and JavaScript) |

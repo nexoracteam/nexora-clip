@@ -35,7 +35,7 @@ use tower_http::services::ServeFile;
 const COOKIE: &str = "nx_remote";
 const TOKEN_KEY: &str = "remote_token";
 const TS_KEY: &str = "remote_ts_url";
-const EVENTS: [&str; 8] = ["task-progress", "task-update", "publish-update", "publish-auth", "clip-update", "clip-progress", "tool-progress", "chatgpt-auth"];
+const EVENTS: [&str; 9] = ["task-progress", "task-update", "publish-update", "publish-auth", "clip-update", "clip-progress", "tool-progress", "chatgpt-auth", "live-update"];
 
 #[derive(Clone)]
 struct Ctx {
@@ -429,6 +429,14 @@ async fn dispatch(ctx: &Ctx, cmd: &str, args: Value) -> std::result::Result<Valu
         "ai_edit" => crate::ai_edit(st(), app.clone(), a(&args, "clipId")?, a(&args, "prompt")?).await,
         "split_clip" => val(crate::split_clip(st(), app.clone(), a(&args, "clipId")?, a(&args, "at")?)?),
         "merge_clips" => val(crate::merge_clips(st(), app.clone(), a(&args, "clipIds")?)?),
+        "live_list" => Ok(crate::live_list(st())),
+        "live_start" => val(crate::live_start(st(), app.clone(), a(&args, "url")?).await?),
+        "live_stop" => { crate::live_stop(st(), app.clone(), a(&args, "id")?); Ok(Value::Null) }
+        "live_set" => { crate::live_set(st(), app.clone(), a(&args, "id")?, a(&args, "auto")?, a(&args, "sensitivity")?, args.get("make").and_then(|v| v.as_bool())); Ok(Value::Null) }
+        "live_clip_now" => crate::live_clip_now(st(), app.clone(), a(&args, "id")?, args.get("pre").and_then(|v| v.as_f64()), args.get("post").and_then(|v| v.as_f64())).await,
+        "live_make" => val(crate::live_make(st(), app.clone(), a(&args, "id")?)?),
+        "live_dismiss" => { crate::live_dismiss(st(), app.clone(), a(&args, "id")?); Ok(Value::Null) }
+        "live_find" => crate::live_find(st(), app.clone(), a(&args, "query")?).await,
         "delete_clip" => crate::delete_clip(st(), a(&args, "clipId")?).map(|_| Value::Null),
         "render_candidate" => val(crate::render_candidate(st(), app.clone(), a(&args, "clipId")?)?),
         "clip_words" => crate::clip_words(st(), a(&args, "clipId")?),

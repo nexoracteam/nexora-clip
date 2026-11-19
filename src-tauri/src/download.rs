@@ -80,7 +80,7 @@ fn js_runtime_args(state: &State) -> Vec<String> {
     vec![]
 }
 
-fn base_args(state: &State, settings: &Settings) -> Vec<String> {
+pub(crate) fn base_args(state: &State, settings: &Settings) -> Vec<String> {
     let mut a: Vec<String> = ["--ignore-config", "--encoding", "utf-8", "--no-playlist", "--no-colors", "--newline", "--windows-filenames",
         "--socket-timeout", "20", "--retries", "3", "--fragment-retries", "3"].iter().map(|s| s.to_string()).collect();
     a.extend(js_runtime_args(state));

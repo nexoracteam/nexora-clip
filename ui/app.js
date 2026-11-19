@@ -41,6 +41,7 @@ const PROVIDERS = [
   ["ollama", "Ollama (on this PC, free)", "", null],
   ["custom", "Local server (OpenAI-compatible)", "", "custom_api_key"],
 ];
+const MOODS = { funny: "Funny", hype: "Hype", fail: "Fail", shock: "Shock", wholesome: "Wholesome" };
 const CHATGPT = ["chatgpt", "ChatGPT (your plan)", "", null];
 const PAID_PROVIDERS = [
   ["openai", "OpenAI (paid)", "gpt-5-mini", "openai_api_key"],
@@ -50,6 +51,7 @@ const PAID_PROVIDERS = [
 
 const ICONS = {
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  live: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></svg>',
   library: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
   send: '<svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>',
@@ -140,7 +142,7 @@ async function call(cmd, args) {
 
 // ---------- navigation ----------
 function go(view, taskId) {
-  S.view = view; S.taskId = taskId || null; S.selected.clear();
+  S.view = view; S.taskId = taskId || null; S.selected.clear(); S.mood = "";
   $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.nav === (view === "task" ? "library" : view)));
   render();
 }
@@ -158,6 +160,7 @@ async function render() {
   const live = () => seq === renderSeq && S.view === view && S.taskId === tid;
   const quiet = (fn) => { if (!live() || typingInView()) return; v.classList.remove("enter"); fn(); };
   if (view === "create") return renderCreate();
+  if (view === "live") { S.live ? renderLive() : (v.innerHTML = skeletonPage("Live")); return loadLive(); }
   if (view === "library") {
     S.tasksLoaded ? renderLibrary() : (v.innerHTML = skeletonPage("Library"));
     const t = await call("list_tasks");
@@ -217,6 +220,128 @@ function tplCard(t, selected) {
 }
 function fontOptions(current) {
   return `<option value="">Template default</option>` + S.fonts.map((f) => `<option value="${esc(f.name)}" ${current === f.name ? "selected" : ""}>${esc(f.family)}</option>`).join("");
+}
+const LIVE_SENS = [[4.5, "More moments"], [6, "Normal"], [8, "Fewer moments"]];
+function liveDur(s) { s = Math.max(0, Math.round(s || 0)); const m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? " " + (s % 60) + " s" : ""}` : `${s} s`; }
+function liveChips(x) {
+  const chat = x.chat != null ? `Chat ${Math.round(x.chat)} in 10 s` : "No chat";
+  return `<span class="chip">Sound ${Math.round(x.level)} dB</span><span class="chip">Action ${Math.round(x.motion)}</span><span class="chip">${chat}</span>`;
+}
+function sessionCard(x) {
+  const label = { live: "Live", connecting: "Connecting", waiting: "Waiting", stopped: "Stopped" }[x.status] || x.status;
+  const sens = LIVE_SENS.reduce((a, b) => (Math.abs(b[0] - x.sensitivity) < Math.abs(a[0] - x.sensitivity) ? b : a));
+  const meter = Math.max(0, Math.min(100, Math.round(((x.level || -60) + 60) / 50 * 100)));
+  return `<div class="card stack live-card" data-sid="${esc(x.id)}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start"><div class="grow"><b>${esc(x.title || x.url)}</b><div class="muted small">${esc(x.channel || "")}</div></div>
+      <span class="badge ${x.status === "live" ? "completed" : ""}">${label}</span></div>
+    ${x.status === "live" ? `<div class="live-preview-slot" data-sid="${esc(x.id)}"></div>` : ""}
+    <div class="muted small live-msg">${esc(x.message || "")}${x.buffered ? ` · ${liveDur(x.buffered)} kept` : ""}</div>
+    ${x.status === "live" ? `<div class="meter" title="Loudness of the last piece"><i style="width:${meter}%"></i></div><div class="chips live-chips">${liveChips(x)}</div>` : ""}
+    <div class="row" style="flex-wrap:wrap"><button class="btn brand" data-act="live-clip" data-id="${esc(x.id)}" ${x.status === "live" ? "" : "disabled"}>Clip now</button>
+      <label class="check"><input type="checkbox" data-live-auto data-id="${esc(x.id)}" ${x.auto ? "checked" : ""} />Catch good moments by itself</label>
+      <select data-live-sens data-id="${esc(x.id)}" style="width:auto">${LIVE_SENS.map((o) => `<option value="${o[0]}" ${o === sens ? "selected" : ""}>${o[1]}</option>`).join("")}</select>
+      <button class="btn sm danger" data-act="live-stop" data-id="${esc(x.id)}">Stop</button></div>
+    <label class="check"><input type="checkbox" data-live-make data-id="${esc(x.id)}" ${x.auto_make ? "checked" : ""} />Also make clips by itself for the strongest moments (uses the AI)</label></div>`;
+}
+function momentCard(m) {
+  const at = new Date(m.created * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const power = m.kind === "auto" ? (m.strength >= 1.5 ? "strong" : "good") : "";
+  return `<div class="clip"><div class="clip-media wide"><video src="${fileSrc(m.path)}" ${m.thumb ? `poster="${fileSrc(m.thumb)}"` : ""} controls preload="none" playsinline></video>
+      <div class="clip-score">${m.kind === "auto" ? "Auto" : "Manual"}</div></div>
+    <div class="clip-body"><div class="clip-title">${esc(m.channel || m.title || "Live moment")}</div>
+      <div class="muted small">${at} · ${Math.round(m.seconds)} s${m.reason ? " · " + esc(m.reason) : ""}${power ? " · " + power : ""}</div>
+      <div class="clip-actions">${m.status === "made" ? `<button class="btn sm brand" data-act="live-open" data-id="${esc(m.task_id)}">Open in Library</button>` : `<button class="btn sm brand" data-act="live-make" data-id="${esc(m.id)}">Make clip</button>`}
+        <button class="btn sm danger" data-act="live-dismiss" data-id="${esc(m.id)}">Dismiss</button></div></div></div>`;
+}
+
+// The live preview plays the buffered pieces one after another, a few seconds behind the stream. Two video
+// elements take turns, the next piece loading while the current one plays, so there is no gap between pieces.
+const PV = {};
+function nextPiece(p) {
+  const i = p.pieces.indexOf(p.last);
+  if (i >= 0) return p.pieces[i + 1] || null;
+  return p.pieces[p.pieces.length - 2] || null;
+}
+function preloadPiece(p) {
+  const nxt = nextPiece(p), o = p.vs[1 - p.cur];
+  if (nxt && o.dataset.path !== nxt) { o.dataset.path = nxt; o.src = fileSrc(nxt); o.preload = "auto"; o.load(); }
+}
+function advancePiece(p) {
+  const behind = p.pieces.length - 1 - p.pieces.indexOf(p.last);
+  if (p.last && behind > 5) p.last = p.pieces[p.pieces.length - 3]; // too far behind: jump forward
+  const nxt = nextPiece(p);
+  if (!nxt) { p.waiting = true; return; }
+  p.waiting = false;
+  const o = p.vs[1 - p.cur];
+  if (o.dataset.path !== nxt) { o.dataset.path = nxt; o.src = fileSrc(nxt); }
+  o.muted = !p.sound;
+  o.classList.remove("off"); p.vs[p.cur].classList.add("off");
+  o.play().catch(() => {});
+  p.cur = 1 - p.cur; p.last = nxt;
+  preloadPiece(p);
+}
+function feedPreview(p) {
+  if (!p.started) {
+    if (p.pieces.length < 3) return;
+    p.started = true; p.last = p.pieces[p.pieces.length - 3];
+    const v = p.vs[p.cur]; v.dataset.path = p.last; v.src = fileSrc(p.last); v.muted = !p.sound; v.classList.remove("off"); v.play().catch(() => {});
+    return preloadPiece(p);
+  }
+  if (p.waiting) return advancePiece(p);
+  preloadPiece(p);
+}
+function previewFor(x) {
+  let p = PV[x.id];
+  if (!p) {
+    const el = document.createElement("div"); el.className = "live-preview";
+    el.innerHTML = `<video playsinline muted></video><video playsinline muted class="off"></video><span class="live-tag">LIVE · a few seconds behind</span><button class="btn sm live-sound" type="button">Sound off</button>`;
+    p = PV[x.id] = { el, vs: [...el.querySelectorAll("video")], cur: 0, last: "", sound: false, pieces: [], started: false, waiting: false };
+    p.vs.forEach((v, i) => v.addEventListener("ended", () => { if (p.cur === i) advancePiece(p); }));
+    el.querySelector(".live-sound").addEventListener("click", (e) => { p.sound = !p.sound; p.vs.forEach((v) => (v.muted = !p.sound)); e.currentTarget.textContent = p.sound ? "Sound on" : "Sound off"; if (p.sound) p.vs[p.cur].play().catch(() => {}); });
+  }
+  p.pieces = x.pieces || [];
+  return p;
+}
+function attachPreviews() {
+  const live = new Set((S.live ? S.live.sessions : []).filter((x) => x.status === "live").map((x) => x.id));
+  Object.keys(PV).forEach((id) => { if (!live.has(id)) delete PV[id]; });
+  $$(".live-preview-slot").forEach((slot) => {
+    const x = S.live.sessions.find((s) => s.id === slot.dataset.sid); if (!x) return;
+    const p = previewFor(x); slot.appendChild(p.el);
+    p.vs[p.cur].play().catch(() => {}); // moving a video in the page pauses it
+    feedPreview(p);
+  });
+}
+function liveShape(L) { return L.sessions.map((s) => [s.id, s.status, s.auto, s.auto_make, s.sensitivity].join(":")).join(",") + "|" + L.moments.map((m) => m.id + m.status).join(","); }
+function onLiveUpdate(L) {
+  const same = S.live && liveShape(S.live) === liveShape(L);
+  S.live = L;
+  if (S.view !== "live" || typingInView()) return;
+  if (!same || !$(".live-card")) return renderLive();
+  L.sessions.forEach((x) => {
+    const card = $(`.live-card[data-sid="${x.id}"]`); if (!card) return;
+    const msg = card.querySelector(".live-msg"); if (msg) msg.textContent = (x.message || "") + (x.buffered ? ` · ${liveDur(x.buffered)} kept` : "");
+    const bar = card.querySelector(".meter i"); if (bar) bar.style.width = Math.max(0, Math.min(100, Math.round(((x.level || -60) + 60) / 50 * 100))) + "%";
+    const chips = card.querySelector(".live-chips"); if (chips) chips.innerHTML = liveChips(x);
+    const p = PV[x.id]; if (p) { p.pieces = x.pieces || []; feedPreview(p); }
+  });
+}
+function renderLive() {
+  const L = S.live || { sessions: [], moments: [] };
+  const found = (S.liveFound || []).map((r) => `<div class="row" style="justify-content:space-between;gap:10px"><div class="grow"><b class="small">${esc(r.title)}</b><div class="muted small">${esc(r.channel)}${r.viewers ? " · " + Number(r.viewers).toLocaleString() + " watching" : ""}</div></div><button class="btn sm" data-act="live-watch" data-url="${esc(r.url)}">Watch</button></div>`).join("");
+  $("#view").innerHTML = `<div class="page stack">
+    <div><h1>Live</h1><p class="muted">Watch a live stream here, a few seconds behind. Nexora Clip keeps the last 10 minutes and catches good moments by itself: the sound getting much louder, a burst of action, and on YouTube the chat suddenly speeding up. Press Clip now for your own. Make clip sends a moment through the usual steps: captions, hook title, layout.</p></div>
+    <div class="card stack">
+      <div class="source-box"><input type="text" id="live-url" placeholder="Live link: YouTube, Twitch or Kick" value="${esc(S.liveUrl || "")}" /><button class="btn big brand" data-act="live-start" id="live-start">Watch</button></div>
+      <div class="row" style="flex-wrap:wrap"><input type="text" id="live-q" value="${esc(S.liveQ ?? "GTA 6 live")}" style="max-width:260px" /><button class="btn" data-act="live-find" id="live-find">Find live streams</button></div>
+      ${S.liveMsg ? `<div class="small">${esc(S.liveMsg)}</div>` : ""}${found ? `<div class="stack" style="gap:10px">${found}</div>` : ""}</div>
+    ${L.sessions.length ? `<div class="stack">${L.sessions.map(sessionCard).join("")}</div>` : ""}
+    ${L.moments.length ? `<div><h2>Moments</h2><div class="clips wide">${L.moments.map(momentCard).join("")}</div></div>` : `<div class="empty">${L.sessions.length ? "No moments yet. Press Clip now, or wait: the app catches loud, busy and chat-heavy moments by itself." : "Nothing is being watched yet."}</div>`}</div>`;
+  attachPreviews();
+}
+async function loadLive() {
+  try { S.live = await invoke("live_list"); } catch (e) { S.live = S.live || { sessions: [], moments: [] }; }
+  if (S.view === "live" && !typingInView()) renderLive();
 }
 function renderCreate() {
   const f = S.form, o = f.options, miss = missingTools();
@@ -335,6 +460,7 @@ function clipCard(c) {
     <div class="clip-media">${media}<div class="clip-score" title="Virality score">${esc(label)}</div>
       ${ready ? `<label class="clip-pick" title="Select to merge"><input type="checkbox" data-pick="${c.id}" ${S.selected.has(c.id) ? "checked" : ""} /></label>` : ""}</div>
     <div class="clip-body">
+      ${v.mood && MOODS[v.mood] ? `<div><span class="mood mood-${v.mood}">${MOODS[v.mood]}</span></div>` : ""}
       <div class="clip-title">${esc(d.hook_title || "Untitled clip")}</div>
       <div class="muted small">${fmt(c.duration || d.ranges.reduce((a, r) => a + r[1] - r[0], 0))} · from ${d.ranges.map((r) => fmt(r[0])).join(", ")}${v.hook_type && v.hook_type !== "none" ? " · " + esc(v.hook_type) + " hook" : ""}</div>
       ${d.role ? "" : `<div class="scores"><div><b>${v.hook_score}</b>Hook</div><div><b>${v.engagement_score}</b>Engage</div><div><b>${v.value_score}</b>Value</div><div><b>${v.shareability_score}</b>Share</div></div>`}
@@ -373,9 +499,17 @@ function taskHead() {
     ${t.status === "error" ? `<div style="margin-bottom:16px">${errorCard(errInfo(t.error))}</div>` : ""}
     ${t.summary ? `<div class="card stack" style="margin-bottom:16px"><p>${esc(t.summary)}</p>${t.key_topics.length ? `<div class="chips">${t.key_topics.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}</div>` : ""}</div>` : ""}`;
 }
+function moodBar() {
+  const count = {};
+  S.clips.forEach((c) => { const m = (c.doc.virality || {}).mood; if (m && MOODS[m]) count[m] = (count[m] || 0) + 1; });
+  const keys = Object.keys(MOODS).filter((m) => count[m]);
+  if (!keys.length) return "";
+  return `<div class="chips mood-bar"><button class="chip chip-btn ${S.mood ? "" : "on"}" data-mood="">All ${S.clips.length}</button>${keys.map((m) => `<button class="chip chip-btn mood-${m} ${S.mood === m ? "on" : ""}" data-mood="${m}">${MOODS[m]} ${count[m]}</button>`).join("")}</div>`;
+}
 function renderTask() {
   $("#view").innerHTML = `<div class="page"><div id="task-head">${taskHead()}</div>
-    <div class="clips" id="clips">${S.clips.map(clipCard).join("")}</div>
+    ${moodBar()}
+    <div class="clips" id="clips">${S.clips.filter((c) => !S.mood || ((c.doc.virality || {}).mood === S.mood)).map(clipCard).join("")}</div>
     ${!S.clips.length && S.task.status === "completed" ? `<div class="empty">No clips.</div>` : ""}</div>`;
 }
 function refreshHead() { const h = $("#task-head"); if (h) h.innerHTML = taskHead(); }
@@ -891,9 +1025,10 @@ async function installTools(names) {
 
 // ---------- events ----------
 document.addEventListener("click", async (ev) => {
-  const el = ev.target.closest("[data-nav],[data-act],[data-wf],[data-len],[data-tpl],[data-task],[data-tab],[data-nudge],[data-rm-range],[data-install],[data-q],[data-layout],[data-ai-chip],[data-guide],[data-disc],[data-copy],[data-open]");
+  const el = ev.target.closest("[data-nav],[data-act],[data-wf],[data-len],[data-tpl],[data-task],[data-tab],[data-nudge],[data-rm-range],[data-install],[data-q],[data-layout],[data-ai-chip],[data-guide],[data-disc],[data-copy],[data-open],[data-mood]");
   if (!el) return;
   const d = el.dataset, o = S.form.options;
+  if (d.mood !== undefined) { S.mood = d.mood; renderTask(); return; }
   if (d.nav) return go(d.nav);
   if (d.task) return go("task", d.task);
   if (d.wf) { S.form.workflow = d.wf; return renderCreate(); }
@@ -1044,6 +1179,27 @@ document.addEventListener("click", async (ev) => {
       catch (err) { return toastError(err); }
       toast("ChatGPT will answer first"); return loadChatgpt(false);
     }
+    case "live-start": {
+      const url = (($("#live-url") || {}).value || "").trim(); if (!url) return toast("Paste a live link first", true);
+      el.disabled = true; try { await call("live_start", { url }); S.liveUrl = ""; S.liveMsg = ""; } catch (err) { /* shown */ }
+      el.disabled = false; return loadLive();
+    }
+    case "live-watch": try { await call("live_start", { url: d.url }); } catch (err) { /* shown */ } return loadLive();
+    case "live-find": {
+      S.liveQ = (($("#live-q") || {}).value || "").trim(); S.liveMsg = "Looking for live streams…"; renderLive();
+      try { const r = await invoke("live_find", { query: S.liveQ }); S.liveFound = r.results; S.liveMsg = r.results.length ? "" : "No live streams found for that."; }
+      catch (err) { S.liveFound = []; S.liveMsg = String(err); }
+      return renderLive();
+    }
+    case "live-stop": await invoke("live_stop", { id }); return loadLive();
+    case "live-clip": {
+      el.disabled = true; toast("Saving the last 25 seconds and the next 10…");
+      try { await call("live_clip_now", { id }); toast("Moment saved"); } catch (err) { /* shown */ }
+      el.disabled = false; return loadLive();
+    }
+    case "live-make": try { await call("live_make", { id }); toast("Making the clip. Follow it in the Library."); } catch (err) { /* shown */ } return loadLive();
+    case "live-dismiss": await invoke("live_dismiss", { id }); return loadLive();
+    case "live-open": return go("task", id);
     case "tunnel-on": try { await invoke("tunnel_connect"); } catch (err) { toastError(err); } S.remoteKey = ""; return loadRemote();
     case "tunnel-off": await invoke("tunnel_disconnect"); S.remoteKey = ""; return loadRemote();
     case "remote-remove": await invoke("remote_remove_device", { id: d.id }); S.remoteKey = ""; return loadRemote();
@@ -1123,6 +1279,11 @@ document.addEventListener("change", async (ev) => {
   if (el.id === "fb-page") { await call("facebook_select", { id: el.value }); toast("Page selected"); }
   if (el.dataset.plat) { el.checked ? S.publishClip.platforms.add(el.dataset.plat) : S.publishClip.platforms.delete(el.dataset.plat); renderPublishModal(); }
   if (el.id === "s-prov") { readSettings(); const P = [...PROVIDERS, ...PAID_PROVIDERS, CHATGPT].find((p) => p[0] === el.value); S.settings.llm = `${el.value}:${P[0] === "ollama" ? (S.ollama && S.ollama[0]) || "" : P[0] === "chatgpt" ? (S.chatgpt && S.chatgpt.model) || (S.chatgptModels && S.chatgptModels[0] && S.chatgptModels[0].slug) || "" : P[2]}`; renderSettings(); loadAiUsage(); }
+  if (el.dataset.liveAuto !== undefined || el.dataset.liveSens !== undefined || el.dataset.liveMake !== undefined) {
+    const card = el.closest(".live-card");
+    await invoke("live_set", { id: el.dataset.id, auto: card.querySelector("[data-live-auto]").checked, sensitivity: Number(card.querySelector("[data-live-sens]").value), make: card.querySelector("[data-live-make]").checked });
+    return;
+  }
   if ("rerender" in el.dataset) { readSettings(); await saveSettings(true); renderSettings(); loadRemote(); }
   if (el.dataset.pick) { el.checked ? S.selected.add(el.dataset.pick) : S.selected.delete(el.dataset.pick); el.closest(".clip").classList.toggle("sel", el.checked); refreshHead(); }
   if (el.dataset.export && el.value) {
@@ -1172,6 +1333,8 @@ T.event.listen("chatgpt-auth", async ({ payload: p }) => {
   S.chatgptModels = null;
   if (S.view === "settings") await loadChatgpt(true);
 });
+document.addEventListener("input", (ev) => { if (ev.target.id === "live-url") S.liveUrl = ev.target.value; if (ev.target.id === "live-q") S.liveQ = ev.target.value; });
+T.event.listen("live-update", ({ payload }) => onLiveUpdate(payload));
 T.event.listen("remote-tunnel", () => { if (S.view === "settings") loadRemote(); });
 T.event.listen("clip-update", ({ payload: c }) => upsertClip(c));
 T.event.listen("clip-progress", ({ payload: p }) => { const el = $(`[data-clip-pct="${p.id}"]`); if (el) el.textContent = `Rendering ${p.progress}%`; });

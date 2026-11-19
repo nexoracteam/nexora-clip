@@ -7,7 +7,7 @@ OUTPUT CONTRACT:
 - The top-level JSON object must include: "most_relevant_segments", "summary", and "key_topics".
 - Each item in "most_relevant_segments" must include: "start_time", "end_time", "text", "relevance_score", "reasoning", "virality", and "hook_title".
 - Do not use "segment" as an output field. Use "text".
-- "virality" must include: "hook_score", "engagement_score", "value_score", "shareability_score", "total_score", "hook_type", and "virality_reasoning".
+- "virality" must include: "hook_score", "engagement_score", "value_score", "shareability_score", "total_score", "hook_type", "mood", and "virality_reasoning".
 - Every returned segment must be {minimum}-{maximum} seconds long. Prefer {ideal_minimum}-{ideal_maximum} seconds.
 
 CORE OBJECTIVES:
@@ -114,6 +114,8 @@ HOOK TYPES to identify:
 - "story": Starts with narrative/anecdote
 - "contrast": Before/after or problem/solution framing
 - "none": No clear hook pattern
+
+{moods}
 
 TIMING GUIDELINES:
 - Target {ideal_minimum}-{ideal_maximum} seconds for most clips

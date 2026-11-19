@@ -49,6 +49,7 @@ fn system_prompt(b: &Bounds) -> String {
         .replace("{maximum}", &format!("{}", b.max as i64))
         .replace("{ideal_minimum}", &format!("{}", b.ideal_min as i64))
         .replace("{ideal_maximum}", &format!("{}", b.ideal_max as i64))
+        .replace("{moods}", crate::knowledge::MOODS.trim())
 }
 
 fn instructions_block(text: &str) -> String {
@@ -108,7 +109,7 @@ JSON-only output requirements:
 - Top-level keys: "most_relevant_segments", "summary", "key_topics".
 - Segment keys: "start_time", "end_time", "text", "relevance_score", "reasoning", "virality", "hook_title".
 - "hook_title" is a 3-9 word plain-text headline for the clip, in the transcript's language, grounded in the segment (no hashtags, emojis, or quotes).
-- Virality keys: "hook_score", "engagement_score", "value_score", "shareability_score", "total_score", "hook_type", "virality_reasoning".
+- Virality keys: "hook_score", "engagement_score", "value_score", "shareability_score", "total_score", "hook_type", "mood", "virality_reasoning".
 - Do not return segments shorter than {min} seconds or longer than {max} seconds.
 
 {instr}Transcript:
@@ -171,6 +172,7 @@ fn parse_virality(v: &Value) -> Virality {
         total_score: (h + e + val + sh).clamp(0, 100),
         hook_type: if ["question", "statement", "statistic", "story", "contrast", "none"].contains(&hook_type.as_str()) { hook_type } else { "none".into() },
         virality_reasoning: s(v, &["virality_reasoning"]).unwrap_or("").to_string(),
+        mood: crate::knowledge::clean_mood(s(v, &["mood"])),
     }
 }
 
@@ -613,5 +615,7 @@ mod tests {
         let v = crate::llm::split_model("google-gla:gemini-3-flash-preview");
         assert_eq!(v.0, "google-gla");
         assert_eq!(parse_virality(&serde_json::json!({"hook_score": 99, "hook_type": "weird"})).hook_score, 25);
+        assert_eq!(parse_virality(&serde_json::json!({"mood": "Funny"})).mood, "funny");
+        assert_eq!(parse_virality(&serde_json::json!({"mood": "epic"})).mood, "");
     }
 }

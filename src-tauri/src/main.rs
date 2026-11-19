@@ -7,7 +7,9 @@ mod gemini;
 mod vision;
 mod quota;
 mod remote;
+mod job;
 mod knowledge;
+mod live;
 mod roman;
 mod subs;
 mod kit;
@@ -64,6 +66,46 @@ fn save_settings(state: S, app: AppHandle, settings: Settings) -> R<()> {
         remote::reconfigure(&app);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn live_list(state: S) -> Value {
+    live::list(&state)
+}
+
+#[tauri::command]
+async fn live_start(state: S<'_>, app: AppHandle, url: String) -> R<String> {
+    live::start(&app, &state, &url).await.map_err(e)
+}
+
+#[tauri::command]
+fn live_stop(state: S, app: AppHandle, id: String) {
+    live::stop(&app, &state, &id)
+}
+
+#[tauri::command]
+fn live_set(state: S, app: AppHandle, id: String, auto: bool, sensitivity: f64, make: Option<bool>) {
+    live::set_options(&app, &state, &id, auto, sensitivity, make.unwrap_or(false))
+}
+
+#[tauri::command]
+async fn live_clip_now(state: S<'_>, app: AppHandle, id: String, pre: Option<f64>, post: Option<f64>) -> R<Value> {
+    live::clip_now(&app, &state, &id, pre.unwrap_or(25.0), post.unwrap_or(10.0)).await.map_err(e)
+}
+
+#[tauri::command]
+fn live_make(state: S, app: AppHandle, id: String) -> R<Task> {
+    live::make(&app, &state, &id).map_err(e)
+}
+
+#[tauri::command]
+fn live_dismiss(state: S, app: AppHandle, id: String) {
+    live::dismiss(&app, &state, &id)
+}
+
+#[tauri::command]
+async fn live_find(state: S<'_>, app: AppHandle, query: String) -> R<Value> {
+    live::find(&app, &state, &query).await.map_err(e)
 }
 
 #[tauri::command]
@@ -724,6 +766,7 @@ fn seed_fonts(res: &Path, data: &Path) {
 }
 
 fn main() {
+    job::init();
     applog::install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -770,6 +813,7 @@ fn main() {
             let settings = st.settings();
             app.manage(Arc::new(st));
             tray::setup(app.handle())?;
+            live::sweep(&Arc::clone(&app.state::<state::State>()));
             remote::reconfigure(app.handle());
             tray::apply(app.handle(), &settings);
             // Started by Windows: stay out of the way in the tray.
@@ -781,7 +825,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, remote_status, remote_new_code, remote_remove_device, remote_reset_pairing, remote_tailscale_setup, remote_forget_tailscale, tunnel_connect, tunnel_disconnect, tunnel_forget, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
+            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, live_list, live_start, live_stop, live_set, live_clip_now, live_make, live_dismiss, live_find, remote_status, remote_new_code, remote_remove_device, remote_reset_pairing, remote_tailscale_setup, remote_forget_tailscale, tunnel_connect, tunnel_disconnect, tunnel_forget, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
             create_task, list_tasks, get_task, cancel_task, resume_task, delete_task,
             update_clip, ai_edit, split_clip, merge_clips, delete_clip, clip_words, render_candidate, get_kit, make_kit, save_kit,
             save_clip, export_clip, export_zip, suggested_name,

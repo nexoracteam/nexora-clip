@@ -77,6 +77,7 @@ pub struct Pick {
     pub what: String,
     pub reason: String,
     pub score: i64,
+    pub mood: String,
 }
 
 /// A time as the model may write it: 12.5, "12.5", "1:05" or "00:01:05".
@@ -113,6 +114,7 @@ pub fn parse_picks(v: &Value, offset: f64, stretch_len: f64, max_len: f64) -> Ve
             what: c["what_happens"].as_str().unwrap_or("").trim().to_string(),
             reason: c["reason"].as_str().unwrap_or("").trim().to_string(),
             score: c["score"].as_i64().unwrap_or(60).clamp(0, 100),
+            mood: crate::knowledge::clean_mood(c["mood"].as_str()),
         });
     }
     out
@@ -147,7 +149,8 @@ fn clips_schema() -> Value {
             "clips": { "type": "ARRAY", "items": { "type": "OBJECT", "properties": {
                 "start_seconds": { "type": "NUMBER" }, "end_seconds": { "type": "NUMBER" },
                 "hook_title": { "type": "STRING" }, "what_happens": { "type": "STRING" },
-                "score": { "type": "INTEGER" }, "reason": { "type": "STRING" }
+                "score": { "type": "INTEGER" }, "reason": { "type": "STRING" },
+                "mood": { "type": "STRING", "enum": ["funny", "hype", "fail", "shock", "wholesome", "none"] }
             }, "required": ["start_seconds", "end_seconds", "hook_title", "what_happens", "score", "reason"] } }
         },
         "required": ["summary", "clips"]
@@ -221,6 +224,7 @@ Rules:\n- Choose up to {n_here} clips, best first. Each clip is between {min} an
 - Prefer a clear peak: a dramatic reveal, a big action beat, a funny failure, a striking visual or a strong drop in the music.\n\
 - hook_title: 3 to 8 words, plain text, no emojis, hashtags or quotes. A specific, curious teaser built from what the viewer SEES (a place, vehicle, character, action), never a flat description like 'Aerial views of...' or a vague one like 'Action and chaos'. Invent no names, dates or facts you cannot see or hear.\n\
 - what_happens: one sentence describing the clip. reason: one sentence on why it works. score: 0 to 100.\n\
+- mood: funny, hype, fail, shock, wholesome or none, from what happens in the clip (a crash or a mistake is fail, a big win or escape is hype, a surprise is shock, a joke is funny, a kind moment is wholesome; use none when unsure).\n\
 - summary: one sentence about the whole video. key_topics: up to 6 short tags.",
             min = min_len as i64, max = max_len as i64
         );
@@ -258,7 +262,7 @@ Rules:\n- Choose up to {n_here} clips, best first. Each clip is between {min} an
             text: p.what,
             reasoning: p.reason,
             relevance: (p.score as f64 / 100.0).clamp(0.3, 0.98),
-            virality: Virality { hook_score: part, engagement_score: part, value_score: part, shareability_score: part, total_score: p.score, hook_type: "none".into(), virality_reasoning: "Scored by Gemini after watching the video.".into() },
+            virality: Virality { hook_score: part, engagement_score: part, value_score: part, shareability_score: part, total_score: p.score, hook_type: "none".into(), virality_reasoning: "Scored by Gemini after watching the video.".into(), mood: p.mood.clone() },
             hook_title: crate::ai::sanitize_hook_title(Some(&p.title)).or_else(|| Some("Watch this moment".into())),
             role: None,
             part_number: None,
@@ -392,7 +396,7 @@ mod tests {
 
     #[test]
     fn best_clips_win_and_overlaps_are_dropped() {
-        let pick = |s: f64, e: f64, score: i64| Pick { start: s, end: e, title: String::new(), what: String::new(), reason: String::new(), score };
+        let pick = |s: f64, e: f64, score: i64| Pick { start: s, end: e, title: String::new(), what: String::new(), reason: String::new(), mood: String::new(), score };
         let got = merge_picks(vec![pick(0.0, 30.0, 70), pick(10.0, 40.0, 90), pick(100.0, 130.0, 60), pick(200.0, 230.0, 80)], 3);
         assert_eq!(got.iter().map(|p| p.start).collect::<Vec<_>>(), vec![10.0, 100.0, 200.0]);
     }

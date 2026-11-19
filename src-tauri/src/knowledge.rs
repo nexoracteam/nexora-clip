@@ -5,6 +5,16 @@
 use crate::models::{Settings, Word};
 use std::path::Path;
 
+/// What each mood tag means. Part of the analysis prompt, so the AI tags clips the same way every time.
+pub const MOODS: &str = include_str!("prompts/moods.txt");
+pub const MOOD_LIST: [&str; 5] = ["funny", "hype", "fail", "shock", "wholesome"];
+
+/// A mood from a model's answer, or "" when it is missing or not one we know.
+pub fn clean_mood(raw: Option<&str>) -> String {
+    let m = raw.unwrap_or("").trim().to_lowercase();
+    if MOOD_LIST.contains(&m.as_str()) { m } else { String::new() }
+}
+
 pub struct Pack {
     pub id: &'static str,
     pub name: &'static str,
@@ -25,13 +35,14 @@ pub static GTA6: Pack = Pack {
     terms: &[
         "GTA 6", "GTA VI", "Grand Theft Auto VI", "Rockstar Games", "Take-Two", "Leonida", "Vice City", "Leonida Keys", "Grassrivers",
         "Port Gellhorn", "Ambrosia", "Mount Kalaga", "Lucia Caminos", "Jason Duval", "Cal Hampton", "Boobie Ike", "Dre'Quan Priest",
-        "Real Dimez", "Only Raw Records", "Brian Heder",
+        "Real Dimez", "Only Raw Records", "Brian Heder", "Kai Cenat", "IShowSpeed", "Typical Gamer", "Fanum", "Live Insaan", "Lacy",
+        "Dmitry Lixxx", "early access", "PS5 Pro",
     ],
-    hashtags: &["gta6", "gtavi", "vicecity", "leonida", "rockstargames", "lucia", "jasonduval", "gta6trailer"],
+    hashtags: &["gta6", "gtavi", "vicecity", "leonida", "rockstargames", "lucia", "jasonduval", "gta6trailer", "grandtheftautovi", "gta6gameplay"],
     keywords: &["gta 6", "gta vi", "gta6", "gtavi", "grand theft auto", "vice city", "leonida", "lucia caminos", "jason duval", "lucia", "rockstar"],
     casing: &[
         ("leonida", "Leonida"), ("lucia", "Lucia"), ("caminos", "Caminos"), ("duval", "Duval"), ("rockstar", "Rockstar"),
-        ("gta", "GTA"), ("gtavi", "GTA VI"), ("gellhorn", "Gellhorn"), ("grassrivers", "Grassrivers"), ("kalaga", "Kalaga"), ("dimez", "Dimez"),
+        ("gta", "GTA"), ("gtavi", "GTA VI"), ("gellhorn", "Gellhorn"), ("grassrivers", "Grassrivers"), ("kalaga", "Kalaga"), ("dimez", "Dimez"), ("ishowspeed", "IShowSpeed"), ("cenat", "Cenat"), ("fanum", "Fanum"),
     ],
 };
 
@@ -153,6 +164,15 @@ mod tests {
         let text: Vec<&str> = v.iter().map(|x| x.text.as_str()).collect();
         assert_eq!(text, ["welcome", "to", "Vice", "City,", "Lucia", "and", "GTA,", "in", "Leonida."]);
         assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn moods_are_cleaned() {
+        assert_eq!(clean_mood(Some(" Hype ")), "hype");
+        assert_eq!(clean_mood(Some("none")), "");
+        assert_eq!(clean_mood(Some("viral")), "");
+        assert_eq!(clean_mood(None), "");
+        assert!(MOODS.contains("wholesome"));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+MOOD TAGS ("mood" in each segment's virality): one of "funny", "hype", "fail", "shock", "wholesome" or "none".
+- funny: the clip is mainly a joke, a silly reaction, banter or an absurd situation. Signs: laughter, the speaker cracking up, a punchline, "bro what is this".
+- hype: big excitement and energy. A clutch win, a huge reveal, a loud celebration, an escape that works out, "let's go", "yooo", a stunt that lands.
+- fail: something goes wrong. A crash, a wasted run, dying, a glitch, a missed shot, an embarrassing mistake. Signs: "no no no", groans, frustration, "I'm so cooked".
+- shock: surprise or disbelief. An unexpected twist, a jump scare, a stunning reveal. Signs: "wait what", "no way", gasps, silence then a loud reaction.
+- wholesome: a kind or warm moment. Helping someone, a sweet reaction, thanks, friendship, a fan meeting, kids or pets.
+- none: an explanation, a story or information with no strong mood. Use it whenever you are not sure.
+Rules: judge only from what the transcript or the picture shows, never to make a clip look more viral. When a clip fits two moods, pick the stronger feeling. In game clips: wrecking a car or getting arrested is a fail; escaping a police chase or a lucky stunt is hype; a crazy unexpected event is a shock; jokes with friends or chat are funny; helping a stranger or a kind NPC moment is wholesome.
