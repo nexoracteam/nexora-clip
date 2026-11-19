@@ -29,6 +29,7 @@ mod state;
 mod tools;
 mod transcribe;
 mod tray;
+mod tunnel;
 mod visual;
 
 use models::*;
@@ -71,6 +72,16 @@ fn remote_status(state: S) -> Value {
 }
 
 #[tauri::command]
+fn remote_new_code(state: S) {
+    remote::new_pair_code(&state)
+}
+
+#[tauri::command]
+fn remote_remove_device(state: S, id: String) {
+    remote::remove_session(&state, &id)
+}
+
+#[tauri::command]
 fn remote_reset_pairing(state: S, app: AppHandle) -> R<()> {
     remote::reset_token(&state).map_err(e)?;
     remote::reconfigure(&app);
@@ -85,6 +96,21 @@ async fn remote_tailscale_setup(state: S<'_>) -> R<String> {
 #[tauri::command]
 fn remote_forget_tailscale(state: S) {
     remote::forget_tailscale(&state)
+}
+
+#[tauri::command]
+fn tunnel_connect(state: S, app: AppHandle) -> R<()> {
+    tunnel::connect(&app, &state).map_err(e)
+}
+
+#[tauri::command]
+fn tunnel_disconnect(state: S, app: AppHandle) {
+    tunnel::disconnect(&app, &state)
+}
+
+#[tauri::command]
+fn tunnel_forget(state: S, app: AppHandle) {
+    tunnel::forget(&app, &state)
 }
 
 #[tauri::command]
@@ -755,7 +781,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, remote_status, remote_reset_pairing, remote_tailscale_setup, remote_forget_tailscale, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
+            storage_info, clear_leftovers, open_folder, log_client_error, get_settings, save_settings, groq_status, test_groq, outro_preview, outro_set_logo, probe_url, tools_status, tool_updates, install_tool, app_info, test_llm, remote_status, remote_new_code, remote_remove_device, remote_reset_pairing, remote_tailscale_setup, remote_forget_tailscale, tunnel_connect, tunnel_disconnect, tunnel_forget, chatgpt_status, chatgpt_login, chatgpt_disconnect, chatgpt_models, chatgpt_set_model, list_ollama, ai_usage, ai_reset_rest, list_templates, list_fonts, add_font,
             create_task, list_tasks, get_task, cancel_task, resume_task, delete_task,
             update_clip, ai_edit, split_clip, merge_clips, delete_clip, clip_words, render_candidate, get_kit, make_kit, save_kit,
             save_clip, export_clip, export_zip, suggested_name,

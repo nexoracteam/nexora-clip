@@ -53,7 +53,7 @@ Paste a YouTube link or drop in a file. Nexora Clip finds the strongest moments,
 
 **Export.** Save a clip, export with a TikTok, Reels or Shorts preset, or download everything as a ZIP.
 
-**Use it from your phone.** Turn on *Remote access* in Settings and the app runs a small web page on this PC. Scan the QR code with your phone to pair it, then see your library, start a video (paste a link or upload one), watch the clips and download them. All the work stays on this PC, so keep it on (the tray and keep-awake options help). Reach the PC from anywhere through [Tailscale](https://tailscale.com) (free, encrypted, nothing opened to the internet), or only at home over Wi-Fi. Keys, account sign-ins and publishing stay on the PC and are not available from the phone.
+**Use it from your phone.** Turn on *Remote access* in Settings, press *Connect*, sign in to a free Tailscale account in your browser once, and scan the QR code with your phone camera. Nothing to install on the phone (it is just the browser) and no Tailscale app on the PC: a small helper inside Nexora Clip carries the connection. You see your library, start a video (paste a link or upload one), watch the clips, edit them (trim, captions, AI edit), save them to the phone or share them straight to TikTok, Instagram or YouTube with the phone's share sheet. The layout is built for a phone: a bottom bar, large buttons, the editor as a full-screen sheet, a banner when the PC cannot be reached, and it can sit on the home screen like an app. All the work stays on this PC, so keep it on (the tray and keep-awake options help). The first time, Tailscale asks you to allow Funnel and HTTPS for your account; the app opens the right page. Each QR code works once and expires after ten minutes, you can see and remove paired phones, and wrong guesses are slowed down. Keys, account sign-ins and publishing stay on the PC and are not available from the phone. Prefer your own Tailscale app, or only your home Wi-Fi? Both are under *Other ways to connect*.
 
 **Reliability.** Keys and tokens are encrypted with Windows DPAPI. Problems (missing tools or keys, low disk space) are caught before a long job starts. A crashed job is marked failed and can be resumed. One window at a time, the window size is remembered, and there is a log file under Settings. Closing the window keeps the app running in the system tray (Quit from the tray icon), it can start with Windows, and it can keep the PC awake while it runs in the background. All three are switches in Settings.
 
@@ -97,9 +97,11 @@ Your data lives in `%LOCALAPPDATA%\com.nexora.clip`.
 Requires Rust (MSVC toolchain) and Node.js.
 
 ```bash
+# the tunnel helper (Go 1.27 or newer), once:
+cd tunnel && go build -ldflags "-s -w" -o nexora-tunnel.exe . && cp nexora-tunnel.exe ../src-tauri/resources/tunnel/ && cd ..
 npm install
 npx tauri build      # installer in src-tauri/target/release/bundle/nsis/
-cargo test           # in src-tauri: 72 unit tests
+cargo test           # in src-tauri: 74 unit tests
 ```
 
 For development: `npx tauri dev`.
@@ -116,6 +118,8 @@ For development: `npx tauri dev`.
 | `src-tauri/src/editor.rs`, `kit.rs` | Trim, split, merge, exports, publish kit |
 | `src-tauri/src/publish.rs` | YouTube, Facebook and TikTok publishing |
 | `src-tauri/src/tools.rs`, `download.rs` | Tool installer, yt-dlp |
+| `src-tauri/src/remote.rs`, `tunnel.rs`, `tray.rs` | Phone access (web server, pairing), the Tailscale helper, tray and start with Windows |
+| `tunnel/` | The Go helper that joins Tailscale (`tsnet`) and opens Funnel |
 | `src-tauri/src/state.rs`, `secret.rs` | SQLite store, DPAPI encryption |
 | `ui/` | The interface (plain HTML, CSS and JavaScript) |
 

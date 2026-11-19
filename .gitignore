@@ -4,3 +4,7 @@ src-tauri/gen/
 .impeccable/
 *.log
 brag-output*/
+
+# built from tunnel/ with Go (see README)
+tunnel/nexora-tunnel.exe
+src-tauri/resources/tunnel/*.exe

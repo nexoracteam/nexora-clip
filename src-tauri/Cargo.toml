@@ -1,6 +1,6 @@
 [package]
 name = "nexora-clip"
-version = "1.5.1"
+version = "1.6.1"
 description = "Nexora Clip - AI video clipping, native Rust"
 edition = "2021"
 license = "AGPL-3.0"

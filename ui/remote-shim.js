@@ -3,12 +3,19 @@
 // It gives app.js the same few functions the desktop window provides, but backed by the PC over HTTP.
 (() => {
   if (window.__TAURI__) return;
+  document.documentElement.classList.add("remote");
 
   const b64url = (s) => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const clean = (s) => String(s || "file").split(/[\\/]/).pop().replace(/[^\p{L}\p{N} ._()-]/gu, "_").slice(0, 120) || "file";
 
   async function invoke(cmd, args) {
-    const r = await fetch("/api/" + cmd, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}), credentials: "same-origin" });
+    let r;
+    try {
+      r = await fetch("/api/" + cmd, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}), credentials: "same-origin" });
+    } catch (e) {
+      window.dispatchEvent(new Event("nx-offline"));
+      throw "Can't reach your PC. Is it on and connected?";
+    }
     if (r.status === 401) {
       document.body.innerHTML = "<p style='padding:28px;font-size:18px'>This phone is not paired. On your PC open Settings, Remote access, and scan the QR code.</p>";
       throw "Not paired";
@@ -20,6 +27,9 @@
 
   const handlers = {};
   const es = new EventSource("/events");
+  let opened = false;
+  es.onopen = () => { if (opened) window.dispatchEvent(new Event("nx-online")); opened = true; };
+  es.onerror = () => window.dispatchEvent(new Event("nx-offline"));
   es.onmessage = (m) => {
     try {
       const { event, payload } = JSON.parse(m.data);

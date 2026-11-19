@@ -167,6 +167,7 @@ async function render() {
     return;
   }
   if (view === "settings") {
+    if (T.remote) return renderPhoneSettings();
     if (S.settings && S.tools.length) { renderSettings(); loadOutroPreview(); loadStorage(); loadAiUsage(); loadUpdates(false); loadOllama(); loadChatgpt(false); loadRemote(); } else v.innerHTML = skeletonPage("Settings");
     const before = JSON.stringify([S.tools, S.groq]);
     await refreshTools();
@@ -221,14 +222,14 @@ function renderCreate() {
   const f = S.form, o = f.options, miss = missingTools();
   const wf = WORKFLOWS.find((w) => w[0] === f.workflow);
   $("#view").innerHTML = `<div class="page stack">
-    <div><h1>What are we clipping today?</h1><p class="muted">Paste a YouTube, Twitch or Kick link, or pick a file from this PC. Everything runs on your machine.</p></div>
-    ${miss.length ? `<div class="alert"><div><b>Finish setup:</b> ${miss.map((t) => esc(t.label)).join(", ")} ${miss.length > 1 ? "are" : "is"} not installed yet.</div><button class="btn primary" data-act="goto-settings">Open setup</button></div>` : ""}
+    <div><h1>What are we clipping today?</h1><p class="muted">${T.remote ? "Paste a YouTube, Twitch or Kick link, or upload a video from your phone. The work happens on your PC." : "Paste a YouTube, Twitch or Kick link, or pick a file from this PC. Everything runs on your machine."}</p></div>
+    ${miss.length ? `<div class="alert"><div><b>Finish setup:</b> ${miss.map((t) => esc(t.label)).join(", ")} ${miss.length > 1 ? "are" : "is"} not installed yet.</div>${T.remote ? "" : `<button class="btn primary" data-act="goto-settings">Open setup</button>`}</div>` : ""}
     <div class="card stack">
       <div class="source-box"><input type="text" id="f-url" placeholder="https://www.youtube.com/watch?v=…" value="${esc(f.url)}" ${f.path ? "disabled" : ""} />
         <button class="btn big brand" data-act="create" id="create-btn">Generate clips</button></div>
       <div id="probe-card">${probeHtml()}</div>
-      <div class="drop ${f.path ? "has-file" : ""}"><span>${f.path ? "📁 " + esc(f.path) : "…or drop a video file here"}</span>
-        <span class="row">${f.path ? `<button class="btn sm" data-act="clear-file">Remove</button>` : ""}<button class="btn sm" data-act="pick-file">Choose file</button></span></div>
+      <div class="drop ${f.path ? "has-file" : ""}"><span>${f.path ? "📁 " + esc(T.remote ? f.path.split(/[\\/]/).pop() : f.path) : T.remote ? "…or upload a video from this phone" : "…or drop a video file here"}</span>
+        <span class="row">${f.path ? `<button class="btn sm" data-act="clear-file">Remove</button>` : ""}<button class="btn sm" data-act="pick-file">${T.remote ? "Upload video" : "Choose file"}</button></span></div>
     </div>
     <div class="card stack">
       <h2>What to make</h2>
@@ -340,7 +341,8 @@ function clipCard(c) {
       <div class="clip-text" title="${esc(d.reasoning)}">${esc(d.text)}</div>
       <div class="clip-actions">
         ${cand ? `<button class="btn sm brand" data-act="gen" data-id="${c.id}">Generate</button>` : `<button class="btn sm" data-act="edit" data-id="${c.id}" ${c.status === "rendering" ? "disabled" : ""}>Edit</button>`}
-        ${ready ? `<button class="btn sm brand" data-act="publish" data-id="${c.id}">Publish</button><button class="btn sm" data-act="kit" data-id="${c.id}" title="AI title, description, hashtags and cover in a ZIP">Publish kit</button>` : ""}
+        ${ready && T.remote ? (navigator.share ? `<button class="btn sm brand" data-act="share" data-id="${c.id}">Share</button>` : "") : ""}
+        ${ready ? `${T.remote ? "" : `<button class="btn sm brand" data-act="publish" data-id="${c.id}">Publish</button>`}<button class="btn sm" data-act="kit" data-id="${c.id}" title="AI title, description, hashtags and cover in a ZIP">Publish kit</button>` : ""}
         ${ready ? `<button class="btn sm" data-act="save" data-id="${c.id}">Save</button>
         <select class="btn sm" data-export="${c.id}" style="width:auto"><option value="">Export for…</option><option value="tiktok">TikTok</option><option value="reels">Reels</option><option value="shorts">Shorts</option></select>` : ""}
         <button class="btn sm danger" data-act="del-clip" data-id="${c.id}" ${c.status === "rendering" ? "disabled" : ""}>Delete</button>
@@ -472,6 +474,11 @@ function receiptRow(r) {
     ${r.url ? `<button class="btn sm" data-open="${esc(r.url)}">Open</button>` : ""}</div>`;
 }
 function renderPublish() {
+  if (T.remote) {
+    $("#view").innerHTML = `<div class="page stack"><div><h1>Publishing</h1><p class="muted">Accounts are connected on the PC. From your phone, tap <b>Share</b> on a clip to post it from the TikTok, Instagram or YouTube app, or tap <b>Save</b> to keep it on the phone.</p></div>
+      <div class="card stack"><h2>Upload history</h2><div id="receipts" class="stack" style="gap:0">${S.pub.history.length ? S.pub.history.map(receiptRow).join("") : `<div class="empty" style="padding:20px 0">Nothing published from the PC yet.</div>`}</div></div></div>`;
+    return;
+  }
   $("#view").innerHTML = `<div class="page stack"><div><h1>Publishing</h1><p class="muted">Post finished clips to your own accounts. Connect each platform once; the guides list exactly what each one needs.</p></div>
     ${ytCard()}${fbCard()}${ttCard()}
     <div class="card stack"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Upload history</h2>${S.pub.history.length ? `<button class="btn sm" data-act="clear-history">Clear</button>` : ""}</div>
@@ -688,30 +695,65 @@ async function loadChatgpt(withModels) {
   const box = $("#chatgpt-card");
   if (box && S.view === "settings" && !typingInView()) renderSettings();
 }
+function deviceName(ua) {
+  const u = String(ua || "");
+  if (/iPhone|iPad/i.test(u)) return "iPhone or iPad";
+  if (/Android/i.test(u)) return "Android phone";
+  if (/Windows/i.test(u)) return "Windows browser";
+  if (/Mac OS/i.test(u)) return "Mac browser";
+  return u.slice(0, 40) || "Phone";
+}
 async function loadRemote() {
   const box = $("#remote-body"); if (!box || T.remote) return;
   let r; try { r = await invoke("remote_status"); } catch (e) { return; }
   S.remote = r;
+  const key = JSON.stringify([r.enabled, r.running, r.error, r.lan, r.tunnel, r.tunnel_wanted, r.public_url, r.tailscale_url, r.devices, (r.sessions || []).map((x) => x.ref), r.pair_url, S.remoteMsg]);
+  if (S.remoteKey === key && box.innerHTML.trim()) return;
+  S.remoteKey = key;
   const put = (h) => { S.remoteHtml = h; box.innerHTML = h; };
   if (!r.enabled) {
-    put(`<p class="muted small">Open this PC's Nexora Clip from your phone: see your library, start a video, watch and download clips. The work stays on this PC, so keep it on. Nothing is open to the internet; you reach it through Tailscale (free) or your home Wi-Fi.</p>
+    put(`<p class="muted small">Use this PC's Nexora Clip from your phone's browser: see your library, start a video, watch and download clips. The work stays on this PC, so keep it on. You need nothing extra on the phone.</p>
       <div class="row"><button class="btn primary" data-act="remote-on">Turn on remote access</button></div>`);
     return;
   }
+  const t = r.tunnel || {};
   const state = r.error ? `<span class="chip" style="color:var(--destructive)">${esc(r.error)}</span>` : r.running ? `<span class="chip ok">Running</span>` : `<span class="chip">Starting…</span>`;
+  const err = (m) => `<div class="errcard"><div class="grow"><p class="err-text">${esc(m)}</p></div></div>`;
+  let reach;
+  if (r.public_url) {
+    reach = `<div class="row"><span class="chip ok">Connected</span><span class="chip">${esc(r.public_url)}</span><button class="btn sm" data-act="tunnel-off">Disconnect</button></div>
+      <p class="muted small">Your phone reaches this PC at that address from anywhere. Only phones you pair can open it.</p>`;
+  } else if (r.tunnel_wanted && t.action_url) {
+    reach = `<p class="small">${esc(t.message)}</p>
+      <div class="row"><button class="btn primary" data-open="${esc(t.action_url)}">Open Tailscale</button><button class="btn sm" data-act="tunnel-off">Cancel</button></div>
+      <div class="row"><span class="btn-spin"></span><span class="muted small">Waiting for you. This page updates by itself.</span></div>`;
+  } else if (r.tunnel_wanted && t.login_url) {
+    reach = `<p class="small">Sign in to Tailscale (free) in the browser window that opened. Use Google, Microsoft or GitHub.</p>
+      <div class="row"><button class="btn primary" data-open="${esc(t.login_url)}">Open the sign-in page again</button><button class="btn sm" data-act="tunnel-off">Cancel</button></div>`;
+  } else if (r.tunnel_wanted && t.running) {
+    reach = `<div class="row"><span class="btn-spin"></span><span class="small">Connecting…</span><button class="btn sm" data-act="tunnel-off">Cancel</button></div>${t.message ? err(t.message) : ""}`;
+  } else {
+    reach = `<p class="muted small">Press Connect and sign in to a free Tailscale account in your browser, once. No Tailscale app and nothing on the phone. The first time, Tailscale may ask you to allow HTTPS and Funnel for your account; the message tells you where.</p>
+      <div class="row"><button class="btn primary" data-act="tunnel-on">Connect</button></div>${t.message ? err(t.message) : ""}${r.tunnel_wanted && !t.running && !t.message ? err("The connection stopped. Press Connect again.") : ""}`;
+  }
   const ts = r.tailscale_url
     ? `<div class="row"><span class="chip">${esc(r.tailscale_url)}</span><button class="btn sm" data-act="remote-forget-ts">Forget</button></div>`
-    : `<p class="muted small">1. Install <b>Tailscale</b> on this PC and on your phone (tailscale.com/download) and sign in to the same account on both. 2. In the Tailscale admin page turn on <b>HTTPS certificates</b>. 3. Press the button.</p><div class="row"><button class="btn primary" data-act="remote-ts" id="remote-ts-btn">Set up Tailscale link</button></div><div id="remote-ts-msg" class="small">${S.remoteMsg ? `<div class="errcard"><div class="grow"><p class="err-text">${esc(S.remoteMsg)}</p></div></div>` : ""}</div>`;
-  const where = r.tailscale_url ? "from anywhere" : r.lan_url ? "on your home Wi-Fi" : "only on this PC until you set up Tailscale or allow Wi-Fi";
+    : `<p class="muted small">If you already use the Tailscale app on this PC and your phone: turn on <b>HTTPS certificates</b> in the Tailscale admin page, then press the button.</p><div class="row"><button class="btn" data-act="remote-ts" id="remote-ts-btn">Use my Tailscale app instead</button></div><div id="remote-ts-msg" class="small">${S.remoteMsg ? err(S.remoteMsg) : ""}</div>`;
+  const where = r.public_url || r.tailscale_url ? "from anywhere" : r.lan_url ? "on your home Wi-Fi" : "only on this PC until you connect above";
+  const mins = Math.max(1, Math.round((r.pair_expires || 0) / 60));
   put(`<div class="row" style="justify-content:space-between"><div>${state}</div><button class="btn sm" data-act="remote-off">Turn off</button></div>
-    <h2 style="margin-top:4px">1. Reach this PC</h2>${ts}
-    <label class="check"><input type="checkbox" data-set="remote_lan" data-rerender ${r.lan ? "checked" : ""} />Also allow my home Wi-Fi without Tailscale (not encrypted, use only at home)</label>
+    <h2 style="margin-top:4px">1. Reach this PC</h2>${reach}
+    <details><summary class="muted small" style="cursor:pointer">Other ways to connect</summary>
+      <div class="stack" style="margin-top:10px">${ts}
+        <label class="check"><input type="checkbox" data-set="remote_lan" data-rerender ${r.lan ? "checked" : ""} />Also allow my home Wi-Fi without any account (not encrypted, use only at home)</label></div></details>
     <h2 style="margin-top:4px">2. Pair your phone</h2>
-    <p class="muted small">Scan this with your phone camera. It opens Nexora Clip ${where}. Anyone with this link can use your app, so do not share it.</p>
+    <p class="muted small">Scan this with your phone camera. It opens Nexora Clip ${where}. The code works <b>once</b> and for about ${mins} minute${mins === 1 ? "" : "s"}; press New QR code for another. ${r.devices ? `<b>${r.devices}</b> phone${r.devices === 1 ? " is" : "s are"} paired.` : "No phone is paired yet."}</p>
     <div class="row" style="align-items:flex-start;gap:18px;flex-wrap:wrap">
       <div style="width:200px;height:200px;background:#fff;border-radius:12px;padding:6px;flex:none">${(r.qr_svg || "").replace("<svg ", '<svg style="width:100%;height:100%" ')}</div>
-      <div class="stack" style="flex:1;min-width:200px"><button class="btn" data-act="remote-copy">Copy pairing link</button><button class="btn" data-act="remote-reset">Reset pairing (signs out all phones)</button></div></div>`);
+      <div class="stack" style="flex:1;min-width:200px"><button class="btn" data-act="remote-copy">Copy pairing link</button><button class="btn" data-act="remote-newqr">New QR code</button><button class="btn" data-act="remote-reset">Sign out all phones</button></div></div>
+    ${(r.sessions || []).length ? `<h2 style="margin-top:4px">Paired phones</h2>${r.sessions.map((x) => `<div class="row" style="justify-content:space-between"><span class="small">${esc(deviceName(x.agent))} <span class="muted">· paired ${esc(new Date(x.created * 1000).toLocaleDateString())}</span></span><button class="btn sm" data-act="remote-remove" data-id="${esc(x.ref)}">Remove</button></div>`).join("")}` : ""}`);
 }
+setInterval(() => { if (S.view === "settings" && $("#remote-body") && S.remote && S.remote.enabled && !document.hidden) loadRemote(); }, 4000);
 async function loadOutroPreview() {
   try {
     const path = await invoke("outro_preview");
@@ -720,6 +762,20 @@ async function loadOutroPreview() {
   const el = $("#outro-preview"); if (el && S.outroPreview) el.innerHTML = `<img src="${S.outroPreview}" alt="Outro preview" />`;
 }
 
+async function renderPhoneSettings() {
+  $("#view").innerHTML = `<div class="page stack"><div><h1>Settings</h1><p class="muted">Settings are changed on the PC. This is how the PC is set up.</p></div>
+    <div class="card stack" id="phone-set"><div class="sk" style="height:120px"></div></div>
+    <div class="card stack"><h2>AI used today</h2><div id="ai-usage" class="muted small">Loading…</div></div></div>`;
+  try {
+    const [info, store, tools, gpt] = await Promise.all([invoke("app_info"), invoke("storage_info"), invoke("tools_status"), invoke("chatgpt_status")]);
+    const missing = tools.filter((t) => !t.installed).map((t) => t.label);
+    const row = (k, v) => `<div class="row" style="justify-content:space-between;gap:12px"><span class="muted">${k}</span><b style="text-align:right">${v}</b></div>`;
+    const el = $("#phone-set"); if (!el) return;
+    el.innerHTML = row("Nexora Clip", "v" + esc(info.version)) + row("AI model", esc(S.settings.llm)) + row("ChatGPT", gpt.connected ? "connected" : "not connected") +
+      row("Tools", missing.length ? esc(missing.join(", ")) + " missing" : "all installed") + row("Video encoder", esc(info.encoder || "auto")) + row("Free disk space", fmtBytes(store.free));
+  } catch (err) { const el = $("#phone-set"); if (el) el.innerHTML = `<p class="muted">Could not read the PC's setup.</p>`; }
+  loadAiUsage();
+}
 function renderSettings() {
   const s = S.settings, [prov, ...rest] = s.llm.split(":"), model = rest.join(":");
   const paid = PAID_PROVIDERS.find((p) => p[0] === prov);
@@ -910,6 +966,18 @@ document.addEventListener("click", async (ev) => {
       if (dest) { await call("save_clip", { clipId: id, dest }); toast("Clip saved"); T.opener.revealItemInDir(dest); }
       return;
     }
+    case "share": {
+      const c = S.clips.find((x) => x.id === id); if (!c || !c.file_path) return;
+      toast("Preparing the clip…");
+      try {
+        let name = String(await invoke("suggested_name", { clipId: id }) || "clip"); if (!/\.mp4$/i.test(name)) name += ".mp4";
+        const blob = await (await fetch(fileSrc(c.file_path))).blob();
+        const file = new File([blob], name, { type: "video/mp4" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: (c.doc && c.doc.hook_title) || "Clip" });
+        else toast("This browser cannot share files. Use Save instead.", true);
+      } catch (err) { if (!(err && err.name === "AbortError")) toast("Could not share: " + ((err && err.message) || err), true); }
+      return;
+    }
     case "del-clip": if (await askConfirm({ title: "Delete this clip?", text: "The clip file is removed from this PC.", label: "Delete" })) { await call("delete_clip", { clipId: id }); S.clips = S.clips.filter((c) => c.id !== id); S.selected.delete(id); renderTask(); } return;
     case "ai-run": {
       const prompt = $("#ai-prompt").value.trim();
@@ -976,8 +1044,12 @@ document.addEventListener("click", async (ev) => {
       catch (err) { return toastError(err); }
       toast("ChatGPT will answer first"); return loadChatgpt(false);
     }
-    case "remote-on": S.settings.remote_enabled = true; await saveSettings(true); return loadRemote();
-    case "remote-off": S.settings.remote_enabled = false; await saveSettings(true); return loadRemote();
+    case "tunnel-on": try { await invoke("tunnel_connect"); } catch (err) { toastError(err); } S.remoteKey = ""; return loadRemote();
+    case "tunnel-off": await invoke("tunnel_disconnect"); S.remoteKey = ""; return loadRemote();
+    case "remote-remove": await invoke("remote_remove_device", { id: d.id }); S.remoteKey = ""; return loadRemote();
+    case "remote-newqr": await invoke("remote_new_code").catch(() => {}); S.remoteKey = ""; return loadRemote();
+    case "remote-on": S.settings.remote_enabled = true; await saveSettings(true); S.remoteKey = ""; return loadRemote();
+    case "remote-off": S.settings.remote_enabled = false; await saveSettings(true); S.remoteKey = ""; return loadRemote();
     case "remote-ts": {
       el.disabled = true; el.innerHTML = '<span class="btn-spin"></span>Setting up…';
       S.remoteMsg = "";
@@ -1100,6 +1172,7 @@ T.event.listen("chatgpt-auth", async ({ payload: p }) => {
   S.chatgptModels = null;
   if (S.view === "settings") await loadChatgpt(true);
 });
+T.event.listen("remote-tunnel", () => { if (S.view === "settings") loadRemote(); });
 T.event.listen("clip-update", ({ payload: c }) => upsertClip(c));
 T.event.listen("clip-progress", ({ payload: p }) => { const el = $(`[data-clip-pct="${p.id}"]`); if (el) el.textContent = `Rendering ${p.progress}%`; });
 T.event.listen("tool-progress", ({ payload: p }) => {
@@ -1111,6 +1184,18 @@ T.event.listen("tauri://drag-drop", ({ payload }) => {
   if (p && S.view === "create") { S.form.path = p; S.form.url = ""; renderCreate(); }
 });
 
+if (T.remote) {
+  const banner = document.createElement("div"); banner.id = "net-banner"; banner.hidden = true; banner.textContent = "Can't reach your PC. Is it on? Trying again…"; document.body.appendChild(banner);
+  let last = 0;
+  const refresh = () => {
+    if (Date.now() - last < 2500) return; last = Date.now();
+    if (S.editor || ["create", "settings"].includes(S.view) || $(".confirm-back")) return;
+    go(S.view, S.taskId);
+  };
+  window.addEventListener("nx-offline", () => { banner.hidden = false; });
+  window.addEventListener("nx-online", () => { banner.hidden = true; refresh(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+}
 $("#theme-toggle").addEventListener("click", toggleTheme);
 (async function init() {
   paintIcons();

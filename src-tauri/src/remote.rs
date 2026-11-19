@@ -11,7 +11,7 @@ use crate::models::NewTask;
 use crate::state::State;
 use anyhow::{anyhow, bail, Result};
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, Request, State as AxState};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as AxPath, Query, Request, State as AxState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -67,6 +67,7 @@ pub fn stop(app: &AppHandle) {
 /// Start, stop or restart the server to match the settings.
 pub fn reconfigure(app: &AppHandle) {
     stop(app);
+    crate::tunnel::stop();
     ERROR.lock().unwrap().clear();
     let Some(state) = app.try_state::<State>() else { return };
     let state: State = state.inner().clone();
@@ -74,8 +75,10 @@ pub fn reconfigure(app: &AppHandle) {
     if !settings.remote_enabled {
         return;
     }
-    if token(&state).is_empty() {
-        let _ = reset_token(&state);
+    if crate::tunnel::wanted(&state) {
+        if let Err(e) = crate::tunnel::start(app, &state) {
+            *ERROR.lock().unwrap() = e.to_string();
+        }
     }
     let _ = std::fs::remove_dir_all(state.data_dir.join("remote_out"));
     let (tx, _) = tokio::sync::broadcast::channel::<String>(256);
@@ -97,7 +100,7 @@ pub fn reconfigure(app: &AppHandle) {
             Ok(listener) => {
                 UP.store(true, Ordering::SeqCst);
                 crate::applog::log(&format!("Remote access listening on {addr}"));
-                let served = axum::serve(listener, router(ctx)).with_graceful_shutdown(async move {
+                let served = axum::serve(listener, router(ctx).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async move {
                     let _ = stop_rx.await;
                 }).await;
                 UP.store(false, Ordering::SeqCst);
@@ -127,14 +130,151 @@ fn router(ctx: Ctx) -> Router {
 
 // ---------- pairing and auth ----------
 
-fn token(state: &State) -> String {
-    state.kv_get(TOKEN_KEY).unwrap_or_default()
+const SESSIONS_KEY: &str = "remote_sessions";
+const PAIR_KEY: &str = "remote_pair";
+/// How long a pairing link / QR code works, and that it works once.
+const PAIR_SECONDS: i64 = 600;
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct Session {
+    id: String,
+    created: i64,
+    agent: String,
 }
 
-/// A new pairing token. Phones paired before stop working.
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn random_id() -> String {
+    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+}
+
+static SESSION_CACHE: Mutex<Option<(std::time::Instant, Vec<String>)>> = Mutex::new(None);
+
+fn load_sessions(state: &State) -> Vec<Session> {
+    if let Some(raw) = state.kv_get(SESSIONS_KEY) {
+        return serde_json::from_str(&raw).unwrap_or_default();
+    }
+    // A phone paired with the first version (one long-lived token) keeps working.
+    let old = state.kv_get(TOKEN_KEY).unwrap_or_default();
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let v = vec![Session { id: old, created: now(), agent: "Phone (earlier pairing)".into() }];
+    save_sessions(state, &v);
+    let _ = state.kv_set(TOKEN_KEY, "");
+    v
+}
+
+fn save_sessions(state: &State, v: &[Session]) {
+    let _ = state.kv_set(SESSIONS_KEY, &serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+    *SESSION_CACHE.lock().unwrap() = None;
+}
+
+/// Is this cookie value a paired phone? (Cached for a couple of seconds: video playback asks a lot.)
+fn is_session(state: &State, id: &str) -> bool {
+    let mut cache = SESSION_CACHE.lock().unwrap();
+    let fresh = cache.as_ref().map(|(t, _)| t.elapsed() < std::time::Duration::from_secs(2)).unwrap_or(false);
+    if !fresh {
+        *cache = Some((std::time::Instant::now(), load_sessions(state).into_iter().map(|s| s.id).collect()));
+    }
+    cache.as_ref().map(|(_, ids)| ids.iter().any(|x| same(x, id))).unwrap_or(false)
+}
+
+pub fn session_count(state: &State) -> usize {
+    load_sessions(state).len()
+}
+
+/// Paired phones for the Settings list. Only the first characters of the id are shown, enough to pick one to remove.
+fn session_list(state: &State) -> Vec<Value> {
+    load_sessions(state).iter().map(|s| json!({"ref": s.id.chars().take(8).collect::<String>(), "created": s.created, "agent": s.agent})).collect()
+}
+
+/// Sign one phone out.
+pub fn remove_session(state: &State, short: &str) {
+    if short.len() < 8 {
+        return;
+    }
+    let kept: Vec<Session> = load_sessions(state).into_iter().filter(|s| !s.id.starts_with(short)).collect();
+    save_sessions(state, &kept);
+}
+
+fn read_pair(state: &State) -> Option<(String, i64)> {
+    let v: Value = serde_json::from_str(&state.kv_get(PAIR_KEY)?).ok()?;
+    let (code, exp) = (v["code"].as_str()?.to_string(), v["expires"].as_i64()?);
+    (!code.is_empty() && exp > now()).then_some((code, exp))
+}
+
+/// The code inside the pairing link and QR: random, works once, expires in ten minutes. A new one is made when needed.
+fn pair_code(state: &State) -> (String, i64) {
+    if let Some(p) = read_pair(state) {
+        return p;
+    }
+    let (code, exp) = (random_id(), now() + PAIR_SECONDS);
+    let _ = state.kv_set(PAIR_KEY, &json!({"code": code, "expires": exp}).to_string());
+    (code, exp)
+}
+
+/// Throw away the open pairing code; the next status call makes a fresh one.
+pub fn new_pair_code(state: &State) {
+    let _ = state.kv_set(PAIR_KEY, "");
+}
+
+/// Sign every phone out and drop any open pairing code.
 pub fn reset_token(state: &State) -> Result<()> {
-    let t = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-    state.kv_set(TOKEN_KEY, &t)
+    state.kv_set(SESSIONS_KEY, "[]")?;
+    state.kv_set(TOKEN_KEY, "")?;
+    state.kv_set(PAIR_KEY, "")?;
+    *SESSION_CACHE.lock().unwrap() = None;
+    Ok(())
+}
+
+// ---------- slowing down guessers ----------
+
+const MAX_FAILS: u32 = 10;
+const FAIL_WINDOW: i64 = 600;
+static FAILS: Mutex<Option<HashMap<String, (u32, i64)>>> = Mutex::new(None);
+
+fn over_limit(map: &HashMap<String, (u32, i64)>, key: &str, max: u32, at: i64) -> bool {
+    map.get(key).map(|(n, since)| *n >= max && at - *since < FAIL_WINDOW).unwrap_or(false)
+}
+
+fn bump(map: &mut HashMap<String, (u32, i64)>, key: &str, at: i64) {
+    map.retain(|_, (_, since)| at - *since < FAIL_WINDOW);
+    let e = map.entry(key.to_string()).or_insert((0, at));
+    e.0 += 1;
+}
+
+fn limited(key: &str) -> bool {
+    let at = now();
+    let g = FAILS.lock().unwrap();
+    g.as_ref().map(|m| over_limit(m, key, MAX_FAILS, at)).unwrap_or(false)
+}
+
+fn record_fail(key: &str) {
+    let at = now();
+    let mut g = FAILS.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    bump(m, key, at);
+}
+
+/// Who is asking. The helper that carries internet traffic runs on this PC and tells us the real address; that header is
+/// believed only when the request itself came from this PC.
+fn client_key(headers: &HeaderMap, peer: IpAddr) -> String {
+    if peer.is_loopback() {
+        if let Some(x) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').last()) {
+            let x = x.trim();
+            if !x.is_empty() && x.len() < 64 {
+                return x.to_string();
+            }
+        }
+    }
+    peer.to_string()
+}
+
+fn too_many() -> Response {
+    (StatusCode::TOO_MANY_REQUESTS, Html("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:sans-serif;padding:32px;background:#1c1917;color:#eee'><h2>Nexora Clip</h2><p>Too many wrong tries. Wait a few minutes.</p></body>")).into_response()
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -150,21 +290,43 @@ fn denied() -> Response {
     (StatusCode::UNAUTHORIZED, Html("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:sans-serif;padding:32px;background:#1c1917;color:#eee'><h2>Nexora Clip</h2><p>This phone is not paired yet. On your PC open Settings, Remote access, and scan the QR code with your phone camera (or copy the pairing link). If you just did, scan it again: the link must be the one with <code>/pair?t=</code> in it, not the plain address.</p></body>")).into_response()
 }
 
-async fn auth(AxState(ctx): AxState<Ctx>, req: Request, next: Next) -> Response {
-    let t = token(&ctx.state);
-    let ok = !t.is_empty() && cookie_value(req.headers()).map(|c| same(&c, &t)).unwrap_or(false);
-    if ok { next.run(req).await } else { denied() }
+async fn auth(AxState(ctx): AxState<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
+    // A paired phone is never slowed down; only wrong guesses are.
+    let cookie = cookie_value(req.headers());
+    if cookie.as_deref().map(|c| is_session(&ctx.state, c)).unwrap_or(false) {
+        return next.run(req).await;
+    }
+    let key = client_key(req.headers(), peer.ip());
+    if limited(&key) {
+        return too_many();
+    }
+    if cookie.is_some() {
+        record_fail(&key);
+    }
+    denied()
 }
 
-async fn pair(AxState(ctx): AxState<Ctx>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap) -> Response {
-    let t = token(&ctx.state);
-    if t.is_empty() || !q.get("t").map(|v| same(v, &t)).unwrap_or(false) {
+async fn pair(AxState(ctx): AxState<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap) -> Response {
+    let key = client_key(&headers, peer.ip());
+    if limited(&key) {
+        return too_many();
+    }
+    let ok = read_pair(&ctx.state).zip(q.get("t")).map(|((code, _), t)| same(&code, t)).unwrap_or(false);
+    if !ok {
+        record_fail(&key);
         return denied();
     }
+    // One use: the code is gone as soon as a phone has it, and the phone gets its own long-lived session id.
+    let _ = ctx.state.kv_set(PAIR_KEY, "");
+    let id = random_id();
+    let agent: String = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("Phone").chars().take(90).collect();
+    let mut all = load_sessions(&ctx.state);
+    all.push(Session { id: id.clone(), created: now(), agent });
+    save_sessions(&ctx.state, &all);
     let secure = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https");
     // Lax, not Strict: a QR code or a link from another app starts the visit from "outside", and a Strict cookie is
     // then withheld on the very next request. The page below also moves on by script, not by redirect, for the same reason.
-    let cookie = format!("{COOKIE}={t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{}", if secure { "; Secure" } else { "" });
+    let cookie = format!("{COOKIE}={id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{}", if secure { "; Secure" } else { "" });
     let mut resp = Html("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta http-equiv=refresh content='1;url=/'><body style='font-family:sans-serif;padding:32px;background:#1c1917;color:#eee'><h2>Nexora Clip</h2><p>Paired. Opening your library...</p><p><a style='color:#f97316' href='/'>Open Nexora Clip</a></p><script>location.replace('/')</script></body>").into_response();
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         resp.headers_mut().insert(header::SET_COOKIE, v);
@@ -263,6 +425,10 @@ async fn dispatch(ctx: &Ctx, cmd: &str, args: Value) -> std::result::Result<Valu
         "storage_info" => crate::storage_info(st()).await,
         "publish_status" => Ok(crate::publish_status(st())),
         "publish_history" => val(crate::publish_history(st())),
+        "update_clip" => val(crate::update_clip(st(), app.clone(), a(&args, "clipId")?, a(&args, "patch")?)?),
+        "ai_edit" => crate::ai_edit(st(), app.clone(), a(&args, "clipId")?, a(&args, "prompt")?).await,
+        "split_clip" => val(crate::split_clip(st(), app.clone(), a(&args, "clipId")?, a(&args, "at")?)?),
+        "merge_clips" => val(crate::merge_clips(st(), app.clone(), a(&args, "clipIds")?)?),
         "delete_clip" => crate::delete_clip(st(), a(&args, "clipId")?).map(|_| Value::Null),
         "render_candidate" => val(crate::render_candidate(st(), app.clone(), a(&args, "clipId")?)?),
         "clip_words" => crate::clip_words(st(), a(&args, "clipId")?),
@@ -368,7 +534,7 @@ async fn manifest() -> Response {
     let body = json!({
         "name": "Nexora Clip", "short_name": "Nexora Clip", "start_url": "/", "display": "standalone",
         "background_color": "#1c1917", "theme_color": "#1c1917",
-        "icons": [{"src": "/assets/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}]
+        "icons": [{"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"}, {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}]
     });
     ([(header::CONTENT_TYPE, "application/manifest+json")], body.to_string()).into_response()
 }
@@ -385,7 +551,8 @@ async fn static_file(AxState(ctx): AxState<Ctx>, uri: Uri) -> Response {
         let html = String::from_utf8_lossy(&bytes).to_string();
         let html = html
             .replace("<script src=\"app.js\"></script>", "<script src=\"/remote-shim.js\"></script><script src=\"app.js\"></script>")
-            .replace("</head>", "<link rel=\"manifest\" href=\"/manifest.webmanifest\" /><meta name=\"theme-color\" content=\"#1c1917\" /></head>");
+            .replace("width=device-width, initial-scale=1", "width=device-width, initial-scale=1, viewport-fit=cover")
+            .replace("</head>", "<link rel=\"manifest\" href=\"/manifest.webmanifest\" /><link rel=\"apple-touch-icon\" href=\"/assets/apple-touch-icon.png\" /><meta name=\"theme-color\" content=\"#1c1917\" /><meta name=\"mobile-web-app-capable\" content=\"yes\" /><meta name=\"apple-mobile-web-app-capable\" content=\"yes\" /><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\" /></head>");
         bytes = html.into_bytes();
     }
     let mut resp = Response::new(Body::from(bytes));
@@ -413,16 +580,23 @@ fn qr_svg(text: &str) -> String {
 
 pub fn status(state: &State) -> Value {
     let s = state.settings();
-    let base = state.kv_get(TS_KEY).filter(|u| !u.is_empty());
+    let tunnel_url = crate::tunnel::url();
+    let ts_url = state.kv_get(TS_KEY).filter(|u| !u.is_empty());
     let local = format!("http://127.0.0.1:{}", s.remote_port);
     let lan = if s.remote_lan { lan_ip().map(|ip| format!("http://{ip}:{}", s.remote_port)) } else { None };
-    let open = base.clone().or(lan.clone()).unwrap_or(local.clone());
-    let t = token(state);
-    let pair = if s.remote_enabled && !t.is_empty() { Some(format!("{open}/pair?t={t}")) } else { None };
+    let open = tunnel_url.clone().or(ts_url.clone()).or(lan.clone()).unwrap_or(local.clone());
+    let (pair, expires) = if s.remote_enabled {
+        let (code, exp) = pair_code(state);
+        (Some(format!("{open}/pair?t={code}")), (exp - now()).max(0))
+    } else {
+        (None, 0)
+    };
     json!({
         "enabled": s.remote_enabled, "running": UP.load(Ordering::SeqCst), "error": ERROR.lock().unwrap().clone(),
         "lan": s.remote_lan, "port": s.remote_port,
-        "local_url": local, "lan_url": lan, "tailscale_url": base,
+        "local_url": local, "lan_url": lan, "tailscale_url": ts_url,
+        "tunnel": crate::tunnel::status(), "tunnel_wanted": crate::tunnel::wanted(state), "public_url": tunnel_url,
+        "devices": session_count(state), "sessions": session_list(state), "pair_expires": expires,
         "pair_url": pair, "qr_svg": pair.as_deref().map(qr_svg).unwrap_or_default(),
     })
 }
@@ -504,5 +678,26 @@ mod tests {
         assert_ne!(v["google_api_key"], "AIza-secret");
         assert_eq!(v["groq_api_key"], "");
         assert_eq!(v["llm"], "x:y");
+    }
+
+    #[test]
+    fn the_real_client_address_is_believed_only_from_this_pc() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_static("9.9.9.9, 1.2.3.4"));
+        assert_eq!(client_key(&h, "127.0.0.1".parse().unwrap()), "1.2.3.4");
+        assert_eq!(client_key(&h, "192.168.1.5".parse().unwrap()), "192.168.1.5");
+        assert_eq!(client_key(&HeaderMap::new(), "127.0.0.1".parse().unwrap()), "127.0.0.1");
+    }
+
+    #[test]
+    fn wrong_guesses_are_slowed_then_forgotten() {
+        let mut m: HashMap<String, (u32, i64)> = HashMap::new();
+        for _ in 0..MAX_FAILS {
+            assert!(!over_limit(&m, "a", MAX_FAILS, 1000));
+            bump(&mut m, "a", 1000);
+        }
+        assert!(over_limit(&m, "a", MAX_FAILS, 1001));
+        assert!(!over_limit(&m, "b", MAX_FAILS, 1001));
+        assert!(!over_limit(&m, "a", MAX_FAILS, 1000 + FAIL_WINDOW + 1));
     }
 }
